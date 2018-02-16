@@ -36,6 +36,7 @@ endif ()
 function (add_variant NAME)
 	string (TOUPPER ${NAME} UPPER_NAME)
 	set (HEADERS
+		carray.hpp
 	)
 	set (SOURCES
 		main.cpp
