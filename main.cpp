@@ -348,6 +348,8 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Par time: " << *global_max_time << " (incl. " << *global_max_init_time << " init time)\n";
     std::cout << "Seq time: " << seq_time << "\n";
+    std::cout << "Speedup: " << (seq_time / *global_max_time)
+              << "  Efficiency: " << (seq_time / *global_max_time / thread_count) << "\n";
 
     if (valid) {
         return EXIT_SUCCESS;
