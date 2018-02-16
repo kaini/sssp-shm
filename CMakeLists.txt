@@ -11,6 +11,9 @@ set (CMAKE_CXX_STANDARD 14)
 if (MSVC)
 	set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++${CMAKE_CXX_STANDARD}")
 	add_definitions (-D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS)
+else ()
+	set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native")
+	set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3 -g3 -march=native")
 endif ()
 
 # Find external libraries
@@ -36,10 +39,15 @@ endif ()
 function (add_variant NAME)
 	string (TOUPPER ${NAME} UPPER_NAME)
 	set (HEADERS
+		array_slice.hpp
+		buddy_allocator.hpp
 		carray.hpp
+		thread_local_allocator.hpp
 	)
 	set (SOURCES
+		buddy_allocator.cpp
 		main.cpp
+		thread_local_allocator.cpp
 	)
 	add_executable (sssp-shm-${NAME} ${HEADERS} ${SOURCES})
 	target_link_libraries (sssp-shm-${NAME} PRIVATE boost openmp)

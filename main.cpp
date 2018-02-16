@@ -1,6 +1,8 @@
+#include "array_slice.hpp"
 #include "carray.hpp"
+#include "thread_local_allocator.hpp"
 #include <atomic>
-#include <boost/heap/pairing_heap.hpp>
+#include <boost/heap/fibonacci_heap.hpp>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -13,6 +15,7 @@
 #include <vector>
 
 using namespace sssp;
+using namespace boost::heap;
 
 namespace {
 
@@ -21,13 +24,15 @@ struct node;
 struct cmp_distance {
     bool operator()(const node* a, const node* b) const;
 };
-using distance_queue_t = boost::heap::pairing_heap<node*, boost::heap::compare<cmp_distance>>;
+using thread_local_distance_queue =
+    fibonacci_heap<node*, compare<cmp_distance>, allocator<thread_local_allocator<node*>>>;
 
 #if defined(CRAUSER)
 struct cmp_crauser_in {
     bool operator()(const node* a, const node* b) const;
 };
-using crauser_in_queue_t = boost::heap::pairing_heap<node*, boost::heap::compare<cmp_crauser_in>>;
+using thread_local_crauser_in_queue =
+    fibonacci_heap<node*, compare<cmp_crauser_in>, allocator<thread_local_allocator<node*>>>;
 #endif
 
 struct edge {
@@ -50,17 +55,17 @@ enum class state : unsigned char {
 
 struct node {
     size_t id = -1;
-    std::vector<edge> edges;
+    array_slice<const edge> edges;
 
     double distance = INFINITY;
     size_t predecessor = -1;
     ::state state = ::state::unexplored;
-    distance_queue_t::handle_type distance_queue_handle;
+    thread_local_distance_queue::handle_type distance_queue_handle;
 
 #if defined(CRAUSER)
     std::mutex min_incoming_mutex; // TODO this should be low contention, use atomics?
     double min_incoming = INFINITY;
-    crauser_in_queue_t::handle_type crauser_in_queue_handle;
+    thread_local_crauser_in_queue::handle_type crauser_in_queue_handle;
 #endif
 };
 
@@ -97,7 +102,8 @@ static std::tuple<bool, double> validate(const carray<carray<node>>& nodes, size
     carray<state> states(node_count, state::unexplored);
 
     auto cmp_distance = [&](size_t a, size_t b) { return distances[a] > distances[b]; };
-    using distance_queue_t = boost::heap::pairing_heap<size_t, boost::heap::compare<decltype(cmp_distance)>>;
+    using distance_queue_t =
+        fibonacci_heap<size_t, compare<decltype(cmp_distance)>, allocator<thread_local_allocator<size_t>>>;
     carray<distance_queue_t::handle_type> distance_queue_handles(node_count);
 
     const auto start_time = std::chrono::steady_clock::now();
@@ -149,38 +155,57 @@ static std::tuple<bool, double> validate(const carray<carray<node>>& nodes, size
 }
 
 // This allows double edges and self edges, but it does not matter too much.
-static void generate_graph(carray<node>& result,
+static void generate_graph(carray<edge>& edges,
+                           carray<node>& nodes,
                            size_t thread_num,
                            size_t thread_count,
                            unsigned int seed,
+                           size_t my_node_count,
                            size_t node_count,
                            double edge_chance) {
-    std::mt19937 rng(seed);
-    std::uniform_int_distribution<size_t> node_dist(0, node_count - 1);
+    nodes = carray<node>(my_node_count);
+
+    std::mt19937 edge_count_rng(seed);
     std::binomial_distribution<size_t> edge_count_dist(node_count, edge_chance);
+    size_t edge_count = 0;
+    for (size_t node_id = thread_num; node_id < node_count; node_id += thread_count) {
+        edge_count += edge_count_dist(edge_count_rng);
+    }
+    edges = carray<edge>(edge_count);
+
+    edge_count_rng.seed(seed);
+    edge_count_dist.reset();
+    size_t edge_at = 0;
+    std::mt19937 other_rng(seed + 1);
+    std::uniform_int_distribution<size_t> node_dist(0, node_count - 1);
     std::uniform_real_distribution<double> edge_cost_dist(0.0, 1.0);
     for (size_t node_id = thread_num; node_id < node_count; node_id += thread_count) {
-        node& node = result[node_id / thread_count];
+        node& node = nodes[node_id / thread_count];
         node.id = node_id;
-        size_t edge_count = edge_count_dist(rng);
-        // TODO waaaay to many memory allocations
-        node.edges.resize(edge_count);
-        for (auto& edge : node.edges) {
-            edge.source = node.id;
-            edge.destination = node_dist(rng);
-            edge.cost = edge_cost_dist(rng);
+
+        size_t node_edge_count = edge_count_dist(edge_count_rng);
+        node.edges = array_slice<const edge>(&edges[edge_at], node_edge_count);
+        for (auto& e : array_slice<edge>(&edges[edge_at], node_edge_count)) {
+            e.source = node.id;
+            e.destination = node_dist(other_rng);
+            e.cost = edge_cost_dist(other_rng);
         }
+        edge_at += node_edge_count;
     }
+    BOOST_ASSERT(edge_count == edge_at);
 }
 
 int main(int argc, char* argv[]) {
-    const size_t node_count = 10001;
+    const size_t node_count = 3000001;
     const double edge_chance = 10.0 / node_count;
     const int seed = 42;
     const size_t thread_count = omp_get_max_threads();
 
     std::cout << "Thread count: " << thread_count << "\n";
 
+    // Maps thread_num -> all edges
+    // The nodes contain a pointers into the edges array
+    carray<carray<edge>> global_edges(thread_count);
     // Maps thread_num -> local_node_id -> node
     carray<carray<node>> global_nodes(thread_count);
     // Maps source thread_num -> destination thread_num -> node_id
@@ -188,36 +213,43 @@ int main(int argc, char* argv[]) {
 
     std::unique_ptr<std::atomic<double>> global_min_distance(new std::atomic<double>());
     std::unique_ptr<std::atomic<double>> global_max_time(new std::atomic<double>(INFINITY));
+    std::unique_ptr<std::atomic<double>> global_max_init_time(new std::atomic<double>(INFINITY));
 
 #pragma omp parallel num_threads(int(thread_count))
     {
         const size_t thread_num = omp_get_thread_num();
         const size_t my_node_count = node_count / thread_count + ((thread_num < node_count % thread_count) ? 1 : 0);
 
+        carray<edge>& my_edges = global_edges[thread_num];
         carray<node>& my_nodes = global_nodes[thread_num];
+        generate_graph(my_edges,
+                       my_nodes,
+                       thread_num,
+                       thread_count,
+                       static_cast<unsigned int>(thread_num * seed),
+                       my_node_count,
+                       node_count,
+                       edge_chance);
+
         carray<std::vector<relaxation>>& my_settle_todo = global_settle_todo[thread_num];
-        my_nodes = carray<node>(node_count);
         my_settle_todo = carray<std::vector<relaxation>>(thread_count);
 
-        generate_graph(
-            my_nodes, thread_num, thread_count, static_cast<unsigned int>(thread_num * seed), node_count, edge_chance);
-
+#pragma omp barrier
         const auto start_time = std::chrono::steady_clock::now();
 
 #if defined(CRAUSER)
         // Preprocessing required for Crauser's criteria
-        for (const node& node : my_nodes) {
-            for (const edge& edge : node.edges) {
-                ::node& dest_node = global_nodes[edge.destination % thread_count][edge.destination / thread_count];
-                std::lock_guard<std::mutex> lock(dest_node.min_incoming_mutex);
-                dest_node.min_incoming = std::min(dest_node.min_incoming, edge.cost);
-            }
+        for (const edge& edge : my_edges) {
+            ::node& dest_node = global_nodes[edge.destination % thread_count][edge.destination / thread_count];
+            std::lock_guard<std::mutex> lock(dest_node.min_incoming_mutex);
+            dest_node.min_incoming = std::min(dest_node.min_incoming, edge.cost);
         }
+#pragma omp barrier
 #endif
 
-        distance_queue_t distance_queue;
+        thread_local_distance_queue distance_queue;
 #if defined(CRAUSER)
-        crauser_in_queue_t crauser_in_queue;
+        thread_local_crauser_in_queue crauser_in_queue;
 #endif
 
         // Helper function to put an edge into the todo list
@@ -242,6 +274,8 @@ int main(int argc, char* argv[]) {
             my_nodes[0].crauser_in_queue_handle = crauser_in_queue.push(&my_nodes[0]);
 #endif
         }
+
+        const auto init_end = std::chrono::steady_clock::now();
 
         for (int phase = 0;; ++phase) {
             for (auto& todo : my_settle_todo) {
@@ -303,13 +337,16 @@ int main(int argc, char* argv[]) {
         reduce(*global_max_time, (end_time - start_time).count() / 1000000000.0, [](double a, double b) {
             return std::max(a, b);
         });
+        reduce(*global_max_init_time, (init_end - start_time).count() / 1000000000.0, [](double a, double b) {
+            return std::max(a, b);
+        });
     }
 
     bool valid;
     double seq_time;
     std::tie(valid, seq_time) = validate(global_nodes, node_count);
 
-    std::cout << "Par time: " << *global_max_time << "\n";
+    std::cout << "Par time: " << *global_max_time << " (incl. " << *global_max_init_time << " init time)\n";
     std::cout << "Seq time: " << seq_time << "\n";
 
     if (valid) {
