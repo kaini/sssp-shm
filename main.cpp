@@ -47,6 +47,7 @@ struct edge {
 };
 
 struct relaxation {
+    size_t node;
     size_t predecessor;
     double distance;
 };
@@ -256,14 +257,7 @@ int main(int argc, char* argv[]) {
     // Maps thread_num -> local_node_id -> node
     carray<carray<node>> global_nodes(thread_count);
     // Maps source thread_num -> destination thread_num -> node_id -> predecessor/distance
-    // Warning this variable uses the thread local allocator, do not use it after the workers have quit!
-    // Also dealloate it before the workers quit!
-    using todos = std::unordered_map<size_t,
-                                     relaxation,
-                                     std::hash<size_t>,
-                                     std::equal_to<size_t>,
-                                     thread_local_allocator<std::pair<size_t, relaxation>>>;
-    carray<carray<todos>> global_settle_todo(thread_count);
+    carray<carray<std::vector<relaxation, thread_local_allocator<relaxation>>>> global_settle_todo(thread_count);
     // Maps numa_node -> node_id -> seen tentative distance
     // This is used to avoid transmitting unnecessary relaxations across a NUMA node
     carray<carray<std::atomic<double>>> global_seen_distances(numa_node_count);
@@ -295,8 +289,9 @@ int main(int argc, char* argv[]) {
                        node_count,
                        edge_chance);
 
-        carray<todos>& my_settle_todo = global_settle_todo[thread_num];
-        my_settle_todo = carray<todos>(thread_count);
+        carray<std::vector<relaxation, thread_local_allocator<relaxation>>>& my_settle_todo =
+            global_settle_todo[thread_num];
+        my_settle_todo = carray<std::vector<relaxation, thread_local_allocator<relaxation>>>(thread_count);
 
         carray<std::atomic<double>>& my_seen_distances = global_seen_distances[numa_node_for_thread[thread_num]];
         if (first_thread_in_numa_node[thread_num]) {
@@ -365,11 +360,8 @@ int main(int argc, char* argv[]) {
                     const double distance = node.distance + edge.cost;
                     if (distance < my_seen_distances[edge.destination].load(std::memory_order_relaxed)) {
                         my_seen_distances[edge.destination].store(distance, std::memory_order_relaxed);
-                        todos& todo = my_settle_todo[edge.destination % thread_count];
-                        auto iter = todo.find(edge.destination);
-                        if (iter == todo.end() || distance < iter->second.distance) {
-                            todo[edge.destination] = relaxation{node.id, distance};
-                        }
+                        my_settle_todo[edge.destination % thread_count].push_back(
+                            relaxation{edge.destination, node.id, distance});
                     }
                 }
             }
@@ -420,7 +412,7 @@ int main(int argc, char* argv[]) {
             for (size_t t = 0; t < thread_count; ++t) {
                 size_t tt = (t + thread_num) % thread_count;
                 for (const auto& todo : global_settle_todo[tt][thread_num]) {
-                    settle_edge(my_nodes[todo.first / thread_count], todo.second.predecessor, todo.second.distance);
+                    settle_edge(my_nodes[todo.node / thread_count], todo.predecessor, todo.distance);
                 }
             }
 
@@ -436,7 +428,7 @@ int main(int argc, char* argv[]) {
         });
 
         // I have to destroy these in the thread, because they use the thread local allocator!
-        my_settle_todo = carray<todos>();
+        my_settle_todo = carray<std::vector<relaxation, thread_local_allocator<relaxation>>>();
     }
 
     bool valid;
