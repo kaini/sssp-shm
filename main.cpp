@@ -1,5 +1,6 @@
 #include "array_slice.hpp"
 #include "carray.hpp"
+#include "mynuma.hpp"
 #include "thread_local_allocator.hpp"
 #include <atomic>
 #include <boost/heap/fibonacci_heap.hpp>
@@ -196,6 +197,19 @@ static void generate_graph(carray<edge>& edges,
 }
 
 int main(int argc, char* argv[]) {
+    if (numa_available() == -1) {
+        std::cerr << "NUMA is not avaiable!\n";
+        return EXIT_FAILURE;
+    }
+
+    for (int i = 0; i < numa_num_task_nodes(); ++i) {
+        std::cout << "from " << i << " to";
+        for (int j = 0; j < numa_num_task_nodes(); ++j) {
+            std::cout << "    " << j << ": " << numa_distance(i, j);
+        }
+        std::cout << "\n";
+    }
+
     const size_t node_count = 10061;
     const double edge_chance = 10.0 / node_count;
     const int seed = 42;
