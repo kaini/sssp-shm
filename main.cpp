@@ -12,6 +12,7 @@
 #include <mutex>
 #include <omp.h>
 #include <random>
+#include <unordered_map>
 #include <vector>
 
 using namespace sssp;
@@ -42,7 +43,6 @@ struct edge {
 };
 
 struct relaxation {
-    size_t node;
     size_t predecessor;
     double distance;
 };
@@ -196,7 +196,7 @@ static void generate_graph(carray<edge>& edges,
 }
 
 int main(int argc, char* argv[]) {
-    const size_t node_count = 3000001;
+    const size_t node_count = 10061;
     const double edge_chance = 10.0 / node_count;
     const int seed = 42;
     const size_t thread_count = omp_get_max_threads();
@@ -208,8 +208,10 @@ int main(int argc, char* argv[]) {
     carray<carray<edge>> global_edges(thread_count);
     // Maps thread_num -> local_node_id -> node
     carray<carray<node>> global_nodes(thread_count);
-    // Maps source thread_num -> destination thread_num -> node_id
-    carray<carray<std::vector<relaxation>>> global_settle_todo(thread_count);
+    // Maps source thread_num -> destination thread_num -> node_id -> predecessor/distance
+    // Warning this variable uses the thread local allocator, do not use it after the workers have quit!
+    using todos = std::unordered_map<size_t, relaxation>;
+    carray<carray<todos>> global_settle_todo(thread_count);
 
     std::unique_ptr<std::atomic<double>> global_min_distance(new std::atomic<double>());
     std::unique_ptr<std::atomic<double>> global_max_time(new std::atomic<double>(INFINITY));
@@ -231,8 +233,8 @@ int main(int argc, char* argv[]) {
                        node_count,
                        edge_chance);
 
-        carray<std::vector<relaxation>>& my_settle_todo = global_settle_todo[thread_num];
-        my_settle_todo = carray<std::vector<relaxation>>(thread_count);
+        carray<todos>& my_settle_todo = global_settle_todo[thread_num];
+        my_settle_todo = carray<todos>(thread_count);
 
 #pragma omp barrier
         const auto start_time = std::chrono::steady_clock::now();
@@ -252,16 +254,45 @@ int main(int argc, char* argv[]) {
         thread_local_crauser_in_queue crauser_in_queue;
 #endif
 
+        // Helper function to update distance and predecessor of a node locally
+        auto settle_edge = [&](node& node, size_t predecessor, double distance) {
+            if (node.state != state::settled && distance < node.distance) {
+                node.predecessor = predecessor;
+                node.distance = distance;
+                if (node.state == state::unexplored) {
+                    node.state = state::fringe;
+                    node.distance_queue_handle = distance_queue.push(&node);
+#if defined(CRAUSER)
+                    node.crauser_in_queue_handle = crauser_in_queue.push(&node);
+#endif
+                } else {
+                    distance_queue.update(node.distance_queue_handle);
+#if defined(CRAUSER)
+                    crauser_in_queue.update(node.crauser_in_queue_handle);
+#endif
+                }
+            }
+        };
+
         // Helper function to put an edge into the todo list
-        auto into_todo = [&](node& node) {
+        auto to_be_relaxed = [&](node& node) {
             distance_queue.erase(node.distance_queue_handle);
 #if defined(CRAUSER)
             crauser_in_queue.erase(node.crauser_in_queue_handle);
 #endif
             node.state = state::settled;
             for (const auto& edge : node.edges) {
-                my_settle_todo[edge.destination % thread_count].push_back(
-                    relaxation{edge.destination, node.id, node.distance + edge.cost});
+                if (edge.destination % thread_count == thread_num) {
+                    // Local relaxation
+                    settle_edge(my_nodes[edge.destination / thread_count], node.id, node.distance + edge.cost);
+                } else {
+                    // Remote relaxation
+                    todos& todo = my_settle_todo[edge.destination % thread_count];
+                    auto iter = todo.find(edge.destination);
+                    if (iter == todo.end() || node.distance + edge.cost < iter->second.distance) {
+                        todo[edge.destination] = relaxation{node.id, node.distance + edge.cost};
+                    }
+                }
             }
         };
 
@@ -290,7 +321,7 @@ int main(int argc, char* argv[]) {
                 break;
             }
             while (!distance_queue.empty() && distance_queue.top()->distance <= min_distance) {
-                into_todo(*distance_queue.top());
+                to_be_relaxed(*distance_queue.top());
             }
 #elif defined(CRAUSER)
             double min_distance = reduce(*global_min_distance,
@@ -301,7 +332,7 @@ int main(int argc, char* argv[]) {
             }
             while (!crauser_in_queue.empty() &&
                    crauser_in_queue.top()->distance - crauser_in_queue.top()->min_incoming <= min_distance) {
-                into_todo(*crauser_in_queue.top());
+                to_be_relaxed(*crauser_in_queue.top());
             }
 #endif
 
@@ -310,23 +341,7 @@ int main(int argc, char* argv[]) {
             for (size_t t = 0; t < thread_count; ++t) {
                 size_t tt = (t + thread_num) % thread_count;
                 for (const auto& todo : global_settle_todo[tt][thread_num]) {
-                    node& node = my_nodes[todo.node / thread_count];
-                    if (node.state != state::settled && todo.distance < node.distance) {
-                        node.distance = todo.distance;
-                        node.predecessor = todo.predecessor;
-                        if (node.state == state::unexplored) {
-                            node.state = state::fringe;
-                            node.distance_queue_handle = distance_queue.push(&node);
-#if defined(CRAUSER)
-                            node.crauser_in_queue_handle = crauser_in_queue.push(&node);
-#endif
-                        } else {
-                            distance_queue.update(node.distance_queue_handle);
-#if defined(CRAUSER)
-                            crauser_in_queue.update(node.crauser_in_queue_handle);
-#endif
-                        }
-                    }
+                    settle_edge(my_nodes[todo.first / thread_count], todo.second.predecessor, todo.second.distance);
                 }
             }
 
@@ -340,6 +355,8 @@ int main(int argc, char* argv[]) {
         reduce(*global_max_init_time, (init_end - start_time).count() / 1000000000.0, [](double a, double b) {
             return std::max(a, b);
         });
+
+        my_settle_todo = carray<todos>();
     }
 
     bool valid;
