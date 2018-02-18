@@ -37,21 +37,28 @@ endif ()
 add_library (numa INTERFACE)
 find_path (NUMA_INCLUDE_DIRECTORY numa.h)
 find_library (NUMA_LIBRARY numa)
+target_include_directories (numa INTERFACE ${NUMA_INCLUDE_DIRECTORY})
+target_link_libraries (numa INTERFACE ${NUMA_LIBRARY})
+target_compile_definitions (numa INTERFACE -DNUMA)
 if (NUMA_INCLUDE_DIRECTORY)
-	target_include_directories (numa INTERFACE ${NUMA_INCLUDE_DIRECTORY})
-	target_link_libraries (numa INTERFACE ${NUMA_LIBRARY})
-	target_compile_definitions (numa INTERFACE -DNUMA)
+	set (HAS_NUMA YES)
+else ()
+	set (HAS_NUMA NO)
 endif ()
 
 # sssp-mpi executable
 #####################
-function (add_variant NAME)
+function (add_variant_impl NAME NUMA)
 	string (TOUPPER ${NAME} UPPER_NAME)
+	if (NUMA)
+		set (NUMASTR "-numa")
+	else ()
+		set (NUMASTR "")
+	endif ()
 	set (HEADERS
 		array_slice.hpp
 		buddy_allocator.hpp
 		carray.hpp
-		mynuma.hpp
 		thread_local_allocator.hpp
 	)
 	set (SOURCES
@@ -59,9 +66,19 @@ function (add_variant NAME)
 		main.cpp
 		thread_local_allocator.cpp
 	)
-	add_executable (sssp-shm-${NAME} ${HEADERS} ${SOURCES})
-	target_link_libraries (sssp-shm-${NAME} PRIVATE boost openmp numa)
-	target_compile_definitions (sssp-shm-${NAME} PRIVATE -D${UPPER_NAME})
+	add_executable (sssp-shm-${NAME}${NUMASTR} ${HEADERS} ${SOURCES})
+	target_link_libraries (sssp-shm-${NAME}${NUMASTR} PRIVATE boost openmp)
+	if (NUMA)
+		target_link_libraries (sssp-shm-${NAME}${NUMASTR} PRIVATE numa)
+	endif ()
+	target_compile_definitions (sssp-shm-${NAME}${NUMASTR} PRIVATE -D${UPPER_NAME})
+endfunction ()
+
+function (add_variant NAME)
+	add_variant_impl (${NAME} NO)
+	if (HAS_NUMA)
+		add_variant_impl (${NAME} YES)
+	endif ()
 endfunction ()
 
 add_variant (dijkstra)

@@ -1,6 +1,5 @@
 #include "array_slice.hpp"
 #include "carray.hpp"
-#include "mynuma.hpp"
 #include "thread_local_allocator.hpp"
 #include <atomic>
 #include <boost/heap/fibonacci_heap.hpp>
@@ -15,6 +14,10 @@
 #include <random>
 #include <unordered_map>
 #include <vector>
+
+#ifdef NUMA
+#include <numa.h>
+#endif
 
 using namespace sssp;
 using namespace boost::heap;
@@ -197,23 +200,53 @@ static void generate_graph(carray<edge>& edges,
 }
 
 int main(int argc, char* argv[]) {
+#ifdef NUMA
     if (numa_available() == -1) {
-        std::cerr << "NUMA is not avaiable!\n";
+        std::cerr << "NUMA is not avaiable, please execute the NUMA-free version!\n";
         return EXIT_FAILURE;
     }
 
-    for (int i = 0; i < numa_num_task_nodes(); ++i) {
-        std::cout << "from " << i << " to";
-        for (int j = 0; j < numa_num_task_nodes(); ++j) {
-            std::cout << "    " << j << ": " << numa_distance(i, j);
+    const size_t numa_node_count = numa_num_task_nodes();
+    size_t thread_count = 0;
+    std::vector<int> numa_node_for_thread;
+    std::vector<bool> first_thread_in_numa_node;
+
+    std::cerr << "NUMA nodes:\n";
+    for (int node = 0; node < numa_node_count; ++node) {
+        auto cpumask = numa_allocate_cpumask();
+        numa_node_to_cpus(node, cpumask);
+        const int weight = numa_bitmask_weight(cpumask);
+        numa_free_cpumask(cpumask);
+        std::cerr << node << ": " << (numa_node_size64(node, nullptr) / 1024 / 1024 / 1024) << " GiB memory    "
+                  << weight << " cpus\n";
+        thread_count += weight;
+        for (int j = 0; j < weight; ++j) {
+            numa_node_for_thread.push_back(node);
+            first_thread_in_numa_node.push_back(j == 0);
         }
-        std::cout << "\n";
     }
+
+    std::cerr << "NUMA distances:\n";
+    for (int i = 0; i < numa_node_count; ++i) {
+        std::cerr << "from " << i << " to";
+        for (int j = 0; j < numa_num_task_nodes(); ++j) {
+            std::cerr << "    " << j << ": " << numa_distance(i, j);
+        }
+        std::cerr << "\n";
+    }
+
+#else
+    std::cerr << "WARNING: No NUMA support.\n";
+    const size_t numa_node_count = 1;
+    const size_t thread_count = omp_get_max_threads();
+    const std::vector<int> numa_node_for_thread(thread_count, 0);
+    std::vector<bool> first_thread_in_numa_node(thread_count, false);
+    first_thread_in_numa_node[0] = true;
+#endif
 
     const size_t node_count = 10061;
     const double edge_chance = 10.0 / node_count;
     const int seed = 42;
-    const size_t thread_count = omp_get_max_threads();
 
     std::cout << "Thread count: " << thread_count << "\n";
 
@@ -224,8 +257,15 @@ int main(int argc, char* argv[]) {
     carray<carray<node>> global_nodes(thread_count);
     // Maps source thread_num -> destination thread_num -> node_id -> predecessor/distance
     // Warning this variable uses the thread local allocator, do not use it after the workers have quit!
-    using todos = std::unordered_map<size_t, relaxation>;
+    using todos = std::unordered_map<size_t,
+                                     relaxation,
+                                     std::hash<size_t>,
+                                     std::equal_to<size_t>,
+                                     thread_local_allocator<std::pair<size_t, relaxation>>>;
     carray<carray<todos>> global_settle_todo(thread_count);
+    // Maps numa_node -> node_id -> seen tentative distance
+    // This is used to avoid transmitting unnecessary relaxations across a NUMA node
+    carray<carray<double>> global_seen_distances(numa_node_count);
 
     std::unique_ptr<std::atomic<double>> global_min_distance(new std::atomic<double>());
     std::unique_ptr<std::atomic<double>> global_max_time(new std::atomic<double>(INFINITY));
@@ -235,6 +275,13 @@ int main(int argc, char* argv[]) {
     {
         const size_t thread_num = omp_get_thread_num();
         const size_t my_node_count = node_count / thread_count + ((thread_num < node_count % thread_count) ? 1 : 0);
+
+#ifdef NUMA
+        auto nodemask = numa_allocate_nodemask();
+        numa_bitmask_setbit(nodemask, numa_node_for_thread[thread_num]);
+        numa_bind(nodemask);
+        numa_free_nodemask(nodemask);
+#endif
 
         carray<edge>& my_edges = global_edges[thread_num];
         carray<node>& my_nodes = global_nodes[thread_num];
@@ -249,6 +296,11 @@ int main(int argc, char* argv[]) {
 
         carray<todos>& my_settle_todo = global_settle_todo[thread_num];
         my_settle_todo = carray<todos>(thread_count);
+
+        carray<double>& my_seen_distances = global_seen_distances[numa_node_for_thread[thread_num]];
+        if (first_thread_in_numa_node[thread_num]) {
+            my_seen_distances = carray<double>(node_count, INFINITY);
+        }
 
 #pragma omp barrier
         const auto start_time = std::chrono::steady_clock::now();
@@ -370,6 +422,7 @@ int main(int argc, char* argv[]) {
             return std::max(a, b);
         });
 
+        // I have to destroy these in the thread, because they use the thread local allocator!
         my_settle_todo = carray<todos>();
     }
 
