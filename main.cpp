@@ -257,6 +257,7 @@ int main(int argc, char* argv[]) {
     carray<carray<node>> global_nodes(thread_count);
     // Maps source thread_num -> destination thread_num -> node_id -> predecessor/distance
     // Warning this variable uses the thread local allocator, do not use it after the workers have quit!
+    // Also dealloate it before the workers quit!
     using todos = std::unordered_map<size_t,
                                      relaxation,
                                      std::hash<size_t>,
@@ -265,7 +266,7 @@ int main(int argc, char* argv[]) {
     carray<carray<todos>> global_settle_todo(thread_count);
     // Maps numa_node -> node_id -> seen tentative distance
     // This is used to avoid transmitting unnecessary relaxations across a NUMA node
-    carray<carray<double>> global_seen_distances(numa_node_count);
+    carray<carray<std::atomic<double>>> global_seen_distances(numa_node_count);
 
     std::unique_ptr<std::atomic<double>> global_min_distance(new std::atomic<double>());
     std::unique_ptr<std::atomic<double>> global_max_time(new std::atomic<double>(INFINITY));
@@ -297,9 +298,13 @@ int main(int argc, char* argv[]) {
         carray<todos>& my_settle_todo = global_settle_todo[thread_num];
         my_settle_todo = carray<todos>(thread_count);
 
-        carray<double>& my_seen_distances = global_seen_distances[numa_node_for_thread[thread_num]];
+        carray<std::atomic<double>>& my_seen_distances = global_seen_distances[numa_node_for_thread[thread_num]];
         if (first_thread_in_numa_node[thread_num]) {
-            my_seen_distances = carray<double>(node_count, INFINITY);
+            my_seen_distances = carray<std::atomic<double>>(node_count);
+            // TODO this can happen in parallel
+            for (auto& d : my_seen_distances) {
+                d.store(INFINITY, std::memory_order_relaxed);
+            }
         }
 
 #pragma omp barrier
@@ -353,10 +358,14 @@ int main(int argc, char* argv[]) {
                     settle_edge(my_nodes[edge.destination / thread_count], node.id, node.distance + edge.cost);
                 } else {
                     // Remote relaxation
-                    todos& todo = my_settle_todo[edge.destination % thread_count];
-                    auto iter = todo.find(edge.destination);
-                    if (iter == todo.end() || node.distance + edge.cost < iter->second.distance) {
-                        todo[edge.destination] = relaxation{node.id, node.distance + edge.cost};
+                    const double distance = node.distance + edge.cost;
+                    if (distance < my_seen_distances[edge.destination].load(std::memory_order_relaxed)) {
+                        my_seen_distances[edge.destination].store(distance, std::memory_order_relaxed);
+                        todos& todo = my_settle_todo[edge.destination % thread_count];
+                        auto iter = todo.find(edge.destination);
+                        if (iter == todo.end() || distance < iter->second.distance) {
+                            todo[edge.destination] = relaxation{node.id, distance};
+                        }
                     }
                 }
             }
