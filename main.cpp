@@ -342,6 +342,10 @@ int main(int argc, char* argv[]) {
                     crauser_in_queue.update(node.crauser_in_queue_handle);
 #endif
                 }
+                // Note: I can store 0.0 as seen distance of the node predecessor here, because
+                // the predecessor is relaxed and will therefore never be reached by a new
+                // edge!
+                my_seen_distances[node.predecessor].store(0.0, std::memory_order_relaxed);
             }
         };
 
