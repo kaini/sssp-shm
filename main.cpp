@@ -431,11 +431,12 @@ int main(int argc, char* argv[]) {
         my_settle_todo = carray<std::vector<relaxation, thread_local_allocator<relaxation>>>();
     }
 
-    bool valid;
-    double seq_time;
+    std::cout << "Par time: " << *global_max_time << " (incl. " << *global_max_init_time << " init time)\n";
+
+    bool valid = true;
+    double seq_time = 0.0;
     std::tie(valid, seq_time) = validate(global_nodes, node_count);
 
-    std::cout << "Par time: " << *global_max_time << " (incl. " << *global_max_init_time << " init time)\n";
     std::cout << "Seq time: " << seq_time << "\n";
     std::cout << "Speedup: " << (seq_time / *global_max_time)
               << "  Efficiency: " << (seq_time / *global_max_time / thread_count) << "\n";
