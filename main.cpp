@@ -200,15 +200,15 @@ static void generate_graph(carray<edge>& edges,
     BOOST_ASSERT(edge_count == edge_at);
 }
 
-int main(int argc, char* argv[]) {
+int main() {
 #ifdef NUMA
     if (numa_available() == -1) {
         std::cerr << "NUMA is not avaiable, please execute the NUMA-free version!\n";
         return EXIT_FAILURE;
     }
 
-    const size_t numa_node_count = numa_num_task_nodes();
-    size_t thread_count = 0;
+    const int numa_node_count = numa_num_task_nodes();
+    int thread_count = 0;
     std::vector<int> numa_node_for_thread;
     std::vector<bool> first_thread_in_numa_node;
 
@@ -238,8 +238,8 @@ int main(int argc, char* argv[]) {
 
 #else
     std::cerr << "WARNING: No NUMA support.\n";
-    const size_t numa_node_count = 1;
-    const size_t thread_count = omp_get_max_threads();
+    const int numa_node_count = 1;
+    const int thread_count = omp_get_max_threads();
     const std::vector<int> numa_node_for_thread(thread_count, 0);
     std::vector<bool> first_thread_in_numa_node(thread_count, false);
     first_thread_in_numa_node[0] = true;
@@ -409,8 +409,8 @@ int main(int argc, char* argv[]) {
 
 #pragma omp barrier
 
-            for (size_t t = 0; t < thread_count; ++t) {
-                size_t tt = (t + thread_num) % thread_count;
+            for (int t = 0; t < thread_count; ++t) {
+                int tt = (t + thread_num) % thread_count;
                 for (const auto& todo : global_settle_todo[tt][thread_num]) {
                     settle_edge(my_nodes[todo.node / thread_count], todo.predecessor, todo.distance);
                 }

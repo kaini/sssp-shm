@@ -3,17 +3,30 @@ cmake_minimum_required (VERSION 3.5)
 # Project setup
 ###############
 project (sssp-shm)
+if (NOT CMAKE_BUILD_TYPE)
+	set (CMAKE_BUILD_TYPE Release)
+endif ()
 
 # Compiler setup
 ################
 set (CMAKE_CXX_STANDARD 14)
-# TODO With cmake 3.10+ this if can be removed.
 if (MSVC)
+	# TODO With cmake 3.10+ this if can be removed.
 	set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++${CMAKE_CXX_STANDARD}")
 	add_definitions (-D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS)
 else ()
-	set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -march=native")
-	set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3 -g3 -march=native")
+	set (CMAKE_CXX_FLAGS "-Wall -Wextra -pedantic")
+	set (CMAKE_CXX_FLAGS_DEBUG "-O0 -g3")
+	set (CMAKE_CXX_FLAGS_RELEASE "-O3")
+	set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3")
+	if (CMAKE_SYSTEM_NAME STREQUAL "SunOS")
+		link_libraries (atomic)
+		set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -mcpu=native")
+		set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -mcpu=native")
+	else ()
+		set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -march=native")
+		set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -march=native")
+	endif ()
 endif ()
 
 # Find external libraries
