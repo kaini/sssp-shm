@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
-#ifdef NUMA
+#ifdef NUMA_LIBNUMA
 #include <numa.h>
 #endif
 
@@ -201,48 +201,47 @@ static void generate_graph(carray<edge>& edges,
 }
 
 int main() {
-#ifdef NUMA
-    if (numa_available() == -1) {
-        std::cerr << "NUMA is not avaiable, please execute the NUMA-free version!\n";
-        return EXIT_FAILURE;
-    }
-
-    const int numa_node_count = numa_num_task_nodes();
-    int thread_count = 0;
-    std::vector<int> numa_node_for_thread;
-    std::vector<bool> first_thread_in_numa_node;
-
-    std::cerr << "NUMA nodes:\n";
-    for (int node = 0; node < numa_node_count; ++node) {
-        auto cpumask = numa_allocate_cpumask();
-        numa_node_to_cpus(node, cpumask);
-        const int weight = numa_bitmask_weight(cpumask);
-        numa_free_cpumask(cpumask);
-        std::cerr << node << ": " << (numa_node_size64(node, nullptr) / 1024 / 1024 / 1024) << " GiB memory    "
-                  << weight << " cpus\n";
-        thread_count += weight;
-        for (int j = 0; j < weight; ++j) {
-            numa_node_for_thread.push_back(node);
-            first_thread_in_numa_node.push_back(j == 0);
-        }
-    }
-
-    std::cerr << "NUMA distances:\n";
-    for (int i = 0; i < numa_node_count; ++i) {
-        std::cerr << "from " << i << " to";
-        for (int j = 0; j < numa_num_task_nodes(); ++j) {
-            std::cerr << "    " << j << ": " << numa_distance(i, j);
-        }
-        std::cerr << "\n";
-    }
-
-#else
-    std::cerr << "WARNING: No NUMA support.\n";
-    const int numa_node_count = 1;
-    const int thread_count = omp_get_max_threads();
-    const std::vector<int> numa_node_for_thread(thread_count, 0);
+    int numa_node_count = 1;
+    int thread_count = omp_get_max_threads();
+    std::vector<int> numa_node_for_thread(thread_count, 0);
     std::vector<bool> first_thread_in_numa_node(thread_count, false);
     first_thread_in_numa_node[0] = true;
+
+#ifdef NUMA_LIBNUMA
+    if (numa_available() == -1) {
+        std::cerr << "WARNING: No NUMA support (numa_available() == -1).\n";
+    } else {
+        numa_node_count = numa_num_task_nodes();
+        thread_count = 0;
+        numa_node_for_thread.clear();
+        first_thread_in_numa_node.clear();
+
+        std::cerr << "NUMA nodes:\n";
+        for (int node = 0; node < numa_node_count; ++node) {
+            auto cpumask = numa_allocate_cpumask();
+            numa_node_to_cpus(node, cpumask);
+            const int weight = numa_bitmask_weight(cpumask);
+            numa_free_cpumask(cpumask);
+            std::cerr << node << ": " << (numa_node_size64(node, nullptr) / 1024 / 1024 / 1024) << " GiB memory    "
+                      << weight << " cpus\n";
+            thread_count += weight;
+            for (int j = 0; j < weight; ++j) {
+                numa_node_for_thread.push_back(node);
+                first_thread_in_numa_node.push_back(j == 0);
+            }
+        }
+
+        std::cerr << "NUMA distances:\n";
+        for (int i = 0; i < numa_node_count; ++i) {
+            std::cerr << "from " << i << " to";
+            for (int j = 0; j < numa_num_task_nodes(); ++j) {
+                std::cerr << "    " << j << ": " << numa_distance(i, j);
+            }
+            std::cerr << "\n";
+        }
+    }
+#else
+    std::cerr << "WARNING: No NUMA support (operating system not supported).\n";
 #endif
 
     const size_t node_count = 10061;
@@ -271,7 +270,7 @@ int main() {
         const size_t thread_num = omp_get_thread_num();
         const size_t my_node_count = node_count / thread_count + ((thread_num < node_count % thread_count) ? 1 : 0);
 
-#ifdef NUMA
+#ifdef NUMA_LIBNUMA
         auto nodemask = numa_allocate_nodemask();
         numa_bitmask_setbit(nodemask, numa_node_for_thread[thread_num]);
         numa_bind(nodemask);
