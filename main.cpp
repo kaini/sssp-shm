@@ -15,8 +15,10 @@
 #include <unordered_map>
 #include <vector>
 
-#ifdef NUMA_LIBNUMA
+#if defined(NUMA_LIBNUMA)
 #include <numa.h>
+#elif defined(NUMA_LGRP)
+#include <sys/lgrp_user.h>
 #endif
 
 using namespace sssp;
@@ -207,10 +209,13 @@ int main() {
     std::vector<bool> first_thread_in_numa_node(thread_count, false);
     first_thread_in_numa_node[0] = true;
 
-#ifdef NUMA_LIBNUMA
+#if defined(NUMA_LIBNUMA)
+    bool has_numa;
     if (numa_available() == -1) {
+        has_numa = false;
         std::cerr << "WARNING: No NUMA support (numa_available() == -1).\n";
     } else {
+        has_numa = true;
         numa_node_count = numa_num_task_nodes();
         thread_count = 0;
         numa_node_for_thread.clear();
@@ -234,8 +239,52 @@ int main() {
         std::cerr << "NUMA distances:\n";
         for (int i = 0; i < numa_node_count; ++i) {
             std::cerr << "from " << i << " to";
-            for (int j = 0; j < numa_num_task_nodes(); ++j) {
+            for (int j = 0; j < numa_node_count; ++j) {
                 std::cerr << "    " << j << ": " << numa_distance(i, j);
+            }
+            std::cerr << "\n";
+        }
+    }
+#elif defined(NUMA_LGRP)
+    bool has_numa;
+    std::vector<lgrp_id_t> numa_node_lgrp_ids;
+    lgrp_cookie_t cookie = lgrp_init(LGRP_VIEW_CALLER);
+    if (cookie == LGRP_COOKIE_NONE) {
+        has_numa = false;
+        std::cerr << "WARNING: No NUMA support (lgrp_init(...) == LGRP_COOKIE_NONE).\n";
+    } else {
+        has_numa = true;
+
+        lgrp_id_t root = lgrp_root(cookie);
+        numa_node_count = lgrp_children(cookie, root, nullptr, 0);
+        numa_node_lgrp_ids.resize(numa_node_count);
+        lgrp_children(cookie, root, numa_node_lgrp_ids.data(), numa_node_count);
+
+        thread_count = 0;
+        numa_node_for_thread.clear();
+        first_thread_in_numa_node.clear();
+
+        std::cerr << "NUMA nodes:\n";
+        for (int node = 0; node < numa_node_count; ++node) {
+            const int cpus = lgrp_cpus(cookie, numa_node_lgrp_ids[node], nullptr, 0, LGRP_CONTENT_ALL);
+            std::cerr << node << ": "
+                      << (lgrp_mem_size(cookie, numa_node_lgrp_ids[node], LGRP_MEM_SZ_INSTALLED, LGRP_CONTENT_ALL) /
+                          1024 / 1024 / 1024)
+                      << " GiB memory    " << cpus << " cpus\n";
+            thread_count += cpus;
+            for (int j = 0; j < cpus; ++j) {
+                numa_node_for_thread.push_back(node);
+                first_thread_in_numa_node.push_back(j == 0);
+            }
+        }
+
+        std::cerr << "NUMA distances:\n";
+        for (int i = 0; i < numa_node_count; ++i) {
+            std::cerr << "from " << i << " to";
+            for (int j = 0; j < numa_node_count; ++j) {
+                std::cerr << "    " << j << ": "
+                          << lgrp_latency_cookie(
+                                 cookie, numa_node_lgrp_ids[i], numa_node_lgrp_ids[j], LGRP_LAT_CPU_TO_MEM);
             }
             std::cerr << "\n";
         }
@@ -265,16 +314,28 @@ int main() {
     std::unique_ptr<std::atomic<double>> global_max_time(new std::atomic<double>(INFINITY));
     std::unique_ptr<std::atomic<double>> global_max_init_time(new std::atomic<double>(INFINITY));
 
-#pragma omp parallel num_threads(int(thread_count))
+#pragma omp parallel num_threads(thread_count)
     {
         const size_t thread_num = omp_get_thread_num();
         const size_t my_node_count = node_count / thread_count + ((thread_num < node_count % thread_count) ? 1 : 0);
 
-#ifdef NUMA_LIBNUMA
-        auto nodemask = numa_allocate_nodemask();
-        numa_bitmask_setbit(nodemask, numa_node_for_thread[thread_num]);
-        numa_bind(nodemask);
-        numa_free_nodemask(nodemask);
+#if defined(NUMA_LIBNUMA)
+        if (has_numa) {
+            auto nodemask = numa_allocate_nodemask();
+            numa_bitmask_setbit(nodemask, numa_node_for_thread[thread_num]);
+            numa_bind(nodemask);
+            numa_free_nodemask(nodemask);
+        }
+#elif defined(NUMA_LGRP)
+        if (has_numa) {
+            for (int node = 0; node < numa_node_count; ++node) {
+                lgrp_affinity_set(P_LWPID,
+                                  P_MYID,
+                                  numa_node_lgrp_ids[node],
+                                  (numa_node_for_thread[thread_num] == node) ? LGRP_AFF_STRONG : LGRP_AFF_NONE);
+            }
+            lgrp_affinity_inherit_set(P_LWPID, P_MYID, LGRP_AFF_INHERIT_FUTURE);
+        }
 #endif
 
         carray<edge>& my_edges = global_edges[thread_num];
@@ -292,6 +353,7 @@ int main() {
             global_settle_todo[thread_num];
         my_settle_todo = carray<std::vector<relaxation, thread_local_allocator<relaxation>>>(thread_count);
 
+#if 0
         carray<std::atomic<double>>& my_seen_distances = global_seen_distances[numa_node_for_thread[thread_num]];
         if (first_thread_in_numa_node[thread_num]) {
             my_seen_distances = carray<std::atomic<double>>(node_count);
@@ -300,6 +362,7 @@ int main() {
                 d.store(INFINITY, std::memory_order_relaxed);
             }
         }
+#endif
 
 #pragma omp barrier
         const auto start_time = std::chrono::steady_clock::now();
@@ -336,10 +399,12 @@ int main() {
                     crauser_in_queue.update(node.crauser_in_queue_handle);
 #endif
                 }
+#if 0
                 // Note: I can store 0.0 as seen distance of the node predecessor here, because
                 // the predecessor is relaxed and will therefore never be reached by a new
                 // edge!
                 my_seen_distances[node.predecessor].store(0.0, std::memory_order_relaxed);
+#endif
             }
         };
 
@@ -357,11 +422,15 @@ int main() {
                 } else {
                     // Remote relaxation
                     const double distance = node.distance + edge.cost;
+#if 0
                     if (distance < my_seen_distances[edge.destination].load(std::memory_order_relaxed)) {
                         my_seen_distances[edge.destination].store(distance, std::memory_order_relaxed);
-                        my_settle_todo[edge.destination % thread_count].push_back(
-                            relaxation{edge.destination, node.id, distance});
+#endif
+                    my_settle_todo[edge.destination % thread_count].push_back(
+                        relaxation{edge.destination, node.id, distance});
+#if 0
                     }
+#endif
                 }
             }
         };
