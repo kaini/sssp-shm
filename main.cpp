@@ -7,24 +7,87 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <hwloc.h>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <omp.h>
 #include <random>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
-#if defined(NUMA_LIBNUMA)
-#include <numa.h>
-#elif defined(NUMA_LGRP)
-#include <sys/lgrp_user.h>
+#if HWLOC_API_VERSION < 0x00020000
+#error hwloc>=2.0.0 is required
 #endif
 
 using namespace sssp;
 using namespace boost::heap;
 
 namespace {
+
+static std::string open_braces = " {[(<|'.";
+static std::string closing_braces = " }])>|'.";
+
+static char open_brace(int level) {
+    if (level < open_braces.size()) {
+        return open_braces[level];
+    } else {
+        return open_braces.back();
+    }
+}
+
+static char closing_brace(int level) {
+    if (level < closing_braces.size()) {
+        return closing_braces[level];
+    } else {
+        return closing_braces.back();
+    }
+}
+
+static std::string hwloc_type_to_string(hwloc_obj_type_t type) {
+    switch (type) {
+        case HWLOC_OBJ_MACHINE:
+            return "machine";
+        case HWLOC_OBJ_PACKAGE:
+            return "package";
+        case HWLOC_OBJ_CORE:
+            return "core";
+        case HWLOC_OBJ_PU:
+            return "pu";
+        case HWLOC_OBJ_L1CACHE:
+            return "L1";
+        case HWLOC_OBJ_L2CACHE:
+            return "L2";
+        case HWLOC_OBJ_L3CACHE:
+            return "L3";
+        case HWLOC_OBJ_L4CACHE:
+            return "L4";
+        case HWLOC_OBJ_L5CACHE:
+            return "L5";
+        case HWLOC_OBJ_L1ICACHE:
+            return "L1i";
+        case HWLOC_OBJ_L2ICACHE:
+            return "L2i";
+        case HWLOC_OBJ_L3ICACHE:
+            return "L3i";
+        case HWLOC_OBJ_GROUP:
+            return "group";
+        case HWLOC_OBJ_NUMANODE:
+            return "numanode";
+        case HWLOC_OBJ_BRIDGE:
+            return "bridge";
+        case HWLOC_OBJ_PCI_DEVICE:
+            return "pci-device";
+        case HWLOC_OBJ_OS_DEVICE:
+            return "os-device";
+        case HWLOC_OBJ_MISC:
+            return "misc";
+        default:
+            return "???";
+    }
+}
 
 struct node;
 
@@ -209,89 +272,31 @@ int main() {
     std::vector<bool> first_thread_in_numa_node(thread_count, false);
     first_thread_in_numa_node[0] = true;
 
-#if defined(NUMA_LIBNUMA)
-    bool has_numa;
-    if (numa_available() == -1) {
-        has_numa = false;
-        std::cerr << "WARNING: No NUMA support (numa_available() == -1).\n";
-    } else {
-        has_numa = true;
-        numa_node_count = numa_num_task_nodes();
-        thread_count = 0;
-        numa_node_for_thread.clear();
-        first_thread_in_numa_node.clear();
+    hwloc_topology_t topo;
+    hwloc_topology_init(&topo);
+    hwloc_topology_load(topo);
 
-        std::cerr << "NUMA nodes:\n";
-        for (int node = 0; node < numa_node_count; ++node) {
-            auto cpumask = numa_allocate_cpumask();
-            numa_node_to_cpus(node, cpumask);
-            const int weight = numa_bitmask_weight(cpumask);
-            numa_free_cpumask(cpumask);
-            std::cerr << node << ": " << (numa_node_size64(node, nullptr) / 1024 / 1024 / 1024) << " GiB memory    "
-                      << weight << " cpus\n";
-            thread_count += weight;
-            for (int j = 0; j < weight; ++j) {
-                numa_node_for_thread.push_back(node);
-                first_thread_in_numa_node.push_back(j == 0);
-            }
+    std::cerr << "Topology depth: (assuming symmetric topology)\n";
+    int topo_depth = hwloc_topology_get_depth(topo);
+    struct topo_layer {
+        int count = 0;
+        std::string name = "";
+    };
+    std::vector<topo_layer> effective_topo;
+    for (int d = 0; d < topo_depth; ++d) {
+        int depth_count = hwloc_get_nbobjs_by_depth(topo, d);
+        if (effective_topo.empty() || depth_count > effective_topo.back().count) {
+            effective_topo.emplace_back();
+            effective_topo.back().count = depth_count;
         }
-
-        std::cerr << "NUMA distances:\n";
-        for (int i = 0; i < numa_node_count; ++i) {
-            std::cerr << "from " << i << " to";
-            for (int j = 0; j < numa_node_count; ++j) {
-                std::cerr << "    " << j << ": " << numa_distance(i, j);
-            }
-            std::cerr << "\n";
+        if (!effective_topo.back().name.empty()) {
+            effective_topo.back().name += "+";
         }
+        effective_topo.back().name += hwloc_type_to_string(hwloc_get_depth_type(topo, d));
     }
-#elif defined(NUMA_LGRP)
-    bool has_numa;
-    std::vector<lgrp_id_t> numa_node_lgrp_ids;
-    lgrp_cookie_t cookie = lgrp_init(LGRP_VIEW_CALLER);
-    if (cookie == LGRP_COOKIE_NONE) {
-        has_numa = false;
-        std::cerr << "WARNING: No NUMA support (lgrp_init(...) == LGRP_COOKIE_NONE).\n";
-    } else {
-        has_numa = true;
-
-        lgrp_id_t root = lgrp_root(cookie);
-        numa_node_count = lgrp_children(cookie, root, nullptr, 0);
-        numa_node_lgrp_ids.resize(numa_node_count);
-        lgrp_children(cookie, root, numa_node_lgrp_ids.data(), numa_node_count);
-
-        thread_count = 0;
-        numa_node_for_thread.clear();
-        first_thread_in_numa_node.clear();
-
-        std::cerr << "NUMA nodes:\n";
-        for (int node = 0; node < numa_node_count; ++node) {
-            const int cpus = lgrp_cpus(cookie, numa_node_lgrp_ids[node], nullptr, 0, LGRP_CONTENT_ALL);
-            std::cerr << node << ": "
-                      << (lgrp_mem_size(cookie, numa_node_lgrp_ids[node], LGRP_MEM_SZ_INSTALLED, LGRP_CONTENT_ALL) /
-                          1024 / 1024 / 1024)
-                      << " GiB memory    " << cpus << " cpus\n";
-            thread_count += cpus;
-            for (int j = 0; j < cpus; ++j) {
-                numa_node_for_thread.push_back(node);
-                first_thread_in_numa_node.push_back(j == 0);
-            }
-        }
-
-        std::cerr << "NUMA distances:\n";
-        for (int i = 0; i < numa_node_count; ++i) {
-            std::cerr << "from " << i << " to";
-            for (int j = 0; j < numa_node_count; ++j) {
-                std::cerr << "    " << j << ": "
-                          << lgrp_latency_cookie(
-                                 cookie, numa_node_lgrp_ids[i], numa_node_lgrp_ids[j], LGRP_LAT_CPU_TO_MEM);
-            }
-            std::cerr << "\n";
-        }
+    for (const auto& layer : effective_topo) {
+        std::cerr << std::setw(4) << layer.count << "x " << layer.name << "\n";
     }
-#else
-    std::cerr << "WARNING: No NUMA support (operating system not supported).\n";
-#endif
 
     const size_t node_count = 10061;
     const double edge_chance = 10.0 / node_count;
@@ -319,25 +324,6 @@ int main() {
         const size_t thread_num = omp_get_thread_num();
         const size_t my_node_count = node_count / thread_count + ((thread_num < node_count % thread_count) ? 1 : 0);
 
-#if defined(NUMA_LIBNUMA)
-        if (has_numa) {
-            auto nodemask = numa_allocate_nodemask();
-            numa_bitmask_setbit(nodemask, numa_node_for_thread[thread_num]);
-            numa_bind(nodemask);
-            numa_free_nodemask(nodemask);
-        }
-#elif defined(NUMA_LGRP)
-        if (has_numa) {
-            for (int node = 0; node < numa_node_count; ++node) {
-                lgrp_affinity_set(P_LWPID,
-                                  P_MYID,
-                                  numa_node_lgrp_ids[node],
-                                  (numa_node_for_thread[thread_num] == node) ? LGRP_AFF_STRONG : LGRP_AFF_NONE);
-            }
-            lgrp_affinity_inherit_set(P_LWPID, P_MYID, LGRP_AFF_INHERIT_FUTURE);
-        }
-#endif
-
         carray<edge>& my_edges = global_edges[thread_num];
         carray<node>& my_nodes = global_nodes[thread_num];
         generate_graph(my_edges,
@@ -353,7 +339,6 @@ int main() {
             global_settle_todo[thread_num];
         my_settle_todo = carray<std::vector<relaxation, thread_local_allocator<relaxation>>>(thread_count);
 
-#if 0
         carray<std::atomic<double>>& my_seen_distances = global_seen_distances[numa_node_for_thread[thread_num]];
         if (first_thread_in_numa_node[thread_num]) {
             my_seen_distances = carray<std::atomic<double>>(node_count);
@@ -362,7 +347,6 @@ int main() {
                 d.store(INFINITY, std::memory_order_relaxed);
             }
         }
-#endif
 
 #pragma omp barrier
         const auto start_time = std::chrono::steady_clock::now();
@@ -399,12 +383,10 @@ int main() {
                     crauser_in_queue.update(node.crauser_in_queue_handle);
 #endif
                 }
-#if 0
                 // Note: I can store 0.0 as seen distance of the node predecessor here, because
                 // the predecessor is relaxed and will therefore never be reached by a new
                 // edge!
                 my_seen_distances[node.predecessor].store(0.0, std::memory_order_relaxed);
-#endif
             }
         };
 
@@ -422,15 +404,11 @@ int main() {
                 } else {
                     // Remote relaxation
                     const double distance = node.distance + edge.cost;
-#if 0
                     if (distance < my_seen_distances[edge.destination].load(std::memory_order_relaxed)) {
                         my_seen_distances[edge.destination].store(distance, std::memory_order_relaxed);
-#endif
-                    my_settle_todo[edge.destination % thread_count].push_back(
-                        relaxation{edge.destination, node.id, distance});
-#if 0
+                        my_settle_todo[edge.destination % thread_count].push_back(
+                            relaxation{edge.destination, node.id, distance});
                     }
-#endif
                 }
             }
         };
