@@ -27,25 +27,6 @@ using namespace boost::heap;
 
 namespace {
 
-static std::string open_braces = " {[(<|'.";
-static std::string closing_braces = " }])>|'.";
-
-static char open_brace(int level) {
-    if (level < open_braces.size()) {
-        return open_braces[level];
-    } else {
-        return open_braces.back();
-    }
-}
-
-static char closing_brace(int level) {
-    if (level < closing_braces.size()) {
-        return closing_braces[level];
-    } else {
-        return closing_braces.back();
-    }
-}
-
 static std::string hwloc_type_to_string(hwloc_obj_type_t type) {
     switch (type) {
         case HWLOC_OBJ_MACHINE:
@@ -124,10 +105,13 @@ enum class state : unsigned char {
 };
 
 struct node {
+    node() : new_distance(INFINITY) {}
+
     size_t id = -1;
     array_slice<const edge> edges;
 
     double distance = INFINITY;
+    std::atomic<double> new_distance;
     size_t predecessor = -1;
     ::state state = ::state::unexplored;
     thread_local_distance_queue::handle_type distance_queue_handle;
@@ -190,16 +174,18 @@ static std::tuple<bool, double> validate(const carray<carray<node>>& nodes, size
         distance_queue.pop();
         states[node] = state::settled;
 
-        for (const edge& edge : nodes[node % nodes.size()][node / nodes.size()].edges) {
-            if (states[edge.destination] != state::settled &&
-                distances[node] + edge.cost < distances[edge.destination]) {
-                distances[edge.destination] = distances[node] + edge.cost;
-                predecessors[edge.destination] = node;
-                if (states[edge.destination] == state::unexplored) {
-                    states[edge.destination] = state::fringe;
-                    distance_queue_handles[edge.destination] = distance_queue.push(edge.destination);
-                } else {
-                    distance_queue.update(distance_queue_handles[edge.destination]);
+        for (size_t thread = 0; thread < nodes.size(); ++thread) {
+            for (const edge& edge : nodes[thread][node].edges) {
+                if (states[edge.destination] != state::settled &&
+                    distances[node] + edge.cost < distances[edge.destination]) {
+                    distances[edge.destination] = distances[node] + edge.cost;
+                    predecessors[edge.destination] = node;
+                    if (states[edge.destination] == state::unexplored) {
+                        states[edge.destination] = state::fringe;
+                        distance_queue_handles[edge.destination] = distance_queue.push(edge.destination);
+                    } else {
+                        distance_queue.update(distance_queue_handles[edge.destination]);
+                    }
                 }
             }
         }
@@ -208,16 +194,21 @@ static std::tuple<bool, double> validate(const carray<carray<node>>& nodes, size
     const auto end_time = std::chrono::steady_clock::now();
 
     bool valid = true;
-    for (size_t i = 0; i < node_count; ++i) {
-        if (nodes[i % nodes.size()][i / nodes.size()].distance != distances[i]) {
-            std::cerr << "Invalid distance for node " << i << " " << nodes[i % nodes.size()][i / nodes.size()].distance
-                      << "!=" << distances[i] << "\n";
-            valid = false;
-        }
-        if (nodes[i % nodes.size()][i / nodes.size()].predecessor != predecessors[i]) {
-            std::cerr << "Invalid predecessor for node " << i << " "
-                      << nodes[i % nodes.size()][i / nodes.size()].predecessor << "!=" << predecessors[i] << "\n";
-            valid = false;
+    for (size_t t = 0; t < nodes.size(); ++t) {
+        std::cerr << "Validating thread " << t << "\n";
+        for (size_t i = 0; i < node_count; ++i) {
+            if (nodes[t][i].predecessor != size_t(-2)) {
+                if (nodes[t][i].distance != distances[i]) {
+                    std::cerr << "Invalid distance for node " << i << " " << nodes[t][i].distance
+                              << "!=" << distances[i] << "\n";
+                    valid = false;
+                }
+                if (nodes[t][i].predecessor != predecessors[i]) {
+                    std::cerr << "Invalid predecessor for node " << i << " " << nodes[t][i].predecessor
+                              << "!=" << predecessors[i] << "\n";
+                    valid = false;
+                }
+            }
         }
     }
 
@@ -230,15 +221,15 @@ static void generate_graph(carray<edge>& edges,
                            size_t thread_num,
                            size_t thread_count,
                            unsigned int seed,
-                           size_t my_node_count,
                            size_t node_count,
                            double edge_chance) {
-    nodes = carray<node>(my_node_count);
+    nodes = carray<node>(node_count);
 
     std::mt19937 edge_count_rng(seed);
-    std::binomial_distribution<size_t> edge_count_dist(node_count, edge_chance);
+    // TODO fix the probability!!!!
+    std::binomial_distribution<size_t> edge_count_dist(node_count / thread_count, edge_chance);
     size_t edge_count = 0;
-    for (size_t node_id = thread_num; node_id < node_count; node_id += thread_count) {
+    for (size_t node_id = 0; node_id < node_count; ++node_id) {
         edge_count += edge_count_dist(edge_count_rng);
     }
     edges = carray<edge>(edge_count);
@@ -249,8 +240,8 @@ static void generate_graph(carray<edge>& edges,
     std::mt19937 other_rng(seed + 1);
     std::uniform_int_distribution<size_t> node_dist(0, node_count - 1);
     std::uniform_real_distribution<double> edge_cost_dist(0.0, 1.0);
-    for (size_t node_id = thread_num; node_id < node_count; node_id += thread_count) {
-        node& node = nodes[node_id / thread_count];
+    for (size_t node_id = 0; node_id < node_count; ++node_id) {
+        node& node = nodes[node_id];
         node.id = node_id;
 
         size_t node_edge_count = edge_count_dist(edge_count_rng);
@@ -266,17 +257,13 @@ static void generate_graph(carray<edge>& edges,
 }
 
 int main() {
-    int numa_node_count = 1;
-    int thread_count = omp_get_max_threads();
-    std::vector<int> numa_node_for_thread(thread_count, 0);
-    std::vector<bool> first_thread_in_numa_node(thread_count, false);
-    first_thread_in_numa_node[0] = true;
+    const int thread_count = omp_get_max_threads();
 
     hwloc_topology_t topo;
     hwloc_topology_init(&topo);
     hwloc_topology_load(topo);
 
-    std::cerr << "Topology depth: (assuming symmetric topology)\n";
+    std::cerr << "Topology: (assuming symmetric topology; * marks NUMA nodes)\n";
     int topo_depth = hwloc_topology_get_depth(topo);
     struct topo_layer {
         int count = 0;
@@ -293,36 +280,37 @@ int main() {
             effective_topo.back().name += "+";
         }
         effective_topo.back().name += hwloc_type_to_string(hwloc_get_depth_type(topo, d));
+        if (hwloc_get_next_obj_by_depth(topo, d, nullptr)->memory_arity > 0) {
+            effective_topo.back().name += "*";
+        }
     }
     for (const auto& layer : effective_topo) {
         std::cerr << std::setw(4) << layer.count << "x " << layer.name << "\n";
     }
 
-    const size_t node_count = 10061;
-    const double edge_chance = 10.0 / node_count;
+    const size_t node_count = 100061;
+    const double edge_chance = 1000.0 / node_count;
     const int seed = 42;
 
     std::cout << "Thread count: " << thread_count << "\n";
 
-    // Maps thread_num -> all edges
+    // Maps thread_num -> local edges
     // The nodes contain a pointers into the edges array
     carray<carray<edge>> global_edges(thread_count);
-    // Maps thread_num -> local_node_id -> node
+    // Maps thread_num -> node_id -> node
+    // Note: *All* threads know *all* nodes, but not all edges! The graph
+    // is distributed over the edges, not over the nodes.
     carray<carray<node>> global_nodes(thread_count);
-    // Maps source thread_num -> destination thread_num -> node_id -> predecessor/distance
-    carray<carray<std::vector<relaxation, thread_local_allocator<relaxation>>>> global_settle_todo(thread_count);
-    // Maps numa_node -> node_id -> seen tentative distance
-    // This is used to avoid transmitting unnecessary relaxations across a NUMA node
-    carray<carray<std::atomic<double>>> global_seen_distances(numa_node_count);
 
     std::unique_ptr<std::atomic<double>> global_min_distance(new std::atomic<double>());
     std::unique_ptr<std::atomic<double>> global_max_time(new std::atomic<double>(INFINITY));
     std::unique_ptr<std::atomic<double>> global_max_init_time(new std::atomic<double>(INFINITY));
+    std::unique_ptr<std::atomic<bool>> global_continue(new std::atomic<bool>());
 
 #pragma omp parallel num_threads(thread_count)
     {
         const size_t thread_num = omp_get_thread_num();
-        const size_t my_node_count = node_count / thread_count + ((thread_num < node_count % thread_count) ? 1 : 0);
+        // TODO: bind stuff
 
         carray<edge>& my_edges = global_edges[thread_num];
         carray<node>& my_nodes = global_nodes[thread_num];
@@ -331,22 +319,8 @@ int main() {
                        thread_num,
                        thread_count,
                        static_cast<unsigned int>(thread_num * seed),
-                       my_node_count,
                        node_count,
                        edge_chance);
-
-        carray<std::vector<relaxation, thread_local_allocator<relaxation>>>& my_settle_todo =
-            global_settle_todo[thread_num];
-        my_settle_todo = carray<std::vector<relaxation, thread_local_allocator<relaxation>>>(thread_count);
-
-        carray<std::atomic<double>>& my_seen_distances = global_seen_distances[numa_node_for_thread[thread_num]];
-        if (first_thread_in_numa_node[thread_num]) {
-            my_seen_distances = carray<std::atomic<double>>(node_count);
-            // TODO this can happen in parallel
-            for (auto& d : my_seen_distances) {
-                d.store(INFINITY, std::memory_order_relaxed);
-            }
-        }
 
 #pragma omp barrier
         const auto start_time = std::chrono::steady_clock::now();
@@ -368,77 +342,45 @@ int main() {
 
         // Helper function to update distance and predecessor of a node locally
         auto settle_edge = [&](node& node, size_t predecessor, double distance) {
-            if (node.state != state::settled && distance < node.distance) {
+            if (distance < node.distance) {
                 node.predecessor = predecessor;
                 node.distance = distance;
-                if (node.state == state::unexplored) {
+                if (node.state == state::fringe) {
+                    distance_queue.update(node.distance_queue_handle);
+#if defined(CRAUSER)
+                    crauser_in_queue.update(node.crauser_in_queue_handle);
+#endif
+                } else {
                     node.state = state::fringe;
                     node.distance_queue_handle = distance_queue.push(&node);
 #if defined(CRAUSER)
                     node.crauser_in_queue_handle = crauser_in_queue.push(&node);
 #endif
-                } else {
-                    distance_queue.update(node.distance_queue_handle);
-#if defined(CRAUSER)
-                    crauser_in_queue.update(node.crauser_in_queue_handle);
-#endif
-                }
-                // Note: I can store 0.0 as seen distance of the node predecessor here, because
-                // the predecessor is relaxed and will therefore never be reached by a new
-                // edge!
-                my_seen_distances[node.predecessor].store(0.0, std::memory_order_relaxed);
-            }
-        };
-
-        // Helper function to put an edge into the todo list
-        auto to_be_relaxed = [&](node& node) {
-            distance_queue.erase(node.distance_queue_handle);
-#if defined(CRAUSER)
-            crauser_in_queue.erase(node.crauser_in_queue_handle);
-#endif
-            node.state = state::settled;
-            for (const auto& edge : node.edges) {
-                if (edge.destination % thread_count == thread_num) {
-                    // Local relaxation
-                    settle_edge(my_nodes[edge.destination / thread_count], node.id, node.distance + edge.cost);
-                } else {
-                    // Remote relaxation
-                    const double distance = node.distance + edge.cost;
-                    if (distance < my_seen_distances[edge.destination].load(std::memory_order_relaxed)) {
-                        my_seen_distances[edge.destination].store(distance, std::memory_order_relaxed);
-                        my_settle_todo[edge.destination % thread_count].push_back(
-                            relaxation{edge.destination, node.id, distance});
-                    }
                 }
             }
         };
 
-        if (thread_num == 0) {
-            my_nodes[0].distance = 0.0;
-            my_nodes[0].predecessor = -1;
-            my_nodes[0].state = state::fringe;
-            my_nodes[0].distance_queue_handle = distance_queue.push(&my_nodes[0]);
+        my_nodes[0].distance = 0.0;
+        my_nodes[0].predecessor = -1;
+        my_nodes[0].state = state::fringe;
+        my_nodes[0].distance_queue_handle = distance_queue.push(&my_nodes[0]);
 #if defined(CRAUSER)
-            my_nodes[0].crauser_in_queue_handle = crauser_in_queue.push(&my_nodes[0]);
+        my_nodes[0].crauser_in_queue_handle = crauser_in_queue.push(&my_nodes[0]);
 #endif
-        }
 
         const auto init_end = std::chrono::steady_clock::now();
 
-        for (int phase = 0;; ++phase) {
-            for (auto& todo : my_settle_todo) {
-                todo.clear();
-            }
-
+        int global_phase = 0;
+        while (true) {
+            global_phase += 1;
 #if defined(DIJKSTRA)
-            double min_distance = reduce(*global_min_distance,
-                                         distance_queue.empty() ? INFINITY : distance_queue.top()->distance,
-                                         [](double a, double b) { return std::min(a, b); });
-            if (min_distance == INFINITY) {
-                break;
-            }
-            while (!distance_queue.empty() && distance_queue.top()->distance <= min_distance) {
-                to_be_relaxed(*distance_queue.top());
+            while (!distance_queue.empty()) {
+                node& node = *distance_queue.top();
+                distance_queue.pop();
+                node.state = state::settled;
+                for (const auto& edge : node.edges) {
+                    settle_edge(my_nodes[edge.destination], node.id, node.distance + edge.cost);
+                }
             }
 #elif defined(CRAUSER)
             double min_distance = reduce(*global_min_distance,
@@ -453,16 +395,52 @@ int main() {
             }
 #endif
 
+            // Exchange the minimum distances per node
+            for (auto& node : my_nodes) {
+                node.new_distance.store(node.distance, std::memory_order_relaxed);
+            }
 #pragma omp barrier
-
-            for (int t = 0; t < thread_count; ++t) {
-                int tt = (t + thread_num) % thread_count;
-                for (const auto& todo : global_settle_todo[tt][thread_num]) {
-                    settle_edge(my_nodes[todo.node / thread_count], todo.predecessor, todo.distance);
+            global_continue->store(false, std::memory_order_relaxed);
+            // This is an all-reduce with operator min in log(t) rounds.
+            // Fun fact: Because min does not care about duplicate elements, this
+            // works with non-powers-of-two as well.
+            // Also note that the reads of new_distance and the writes to
+            // new_distance actually race, but it does not matter, because
+            // a write can only be a smaller value and it is valid to propagate
+            // the smaller value.
+            for (int offset = 1; offset < thread_count; offset *= 2) {
+                int thread = (thread_num + offset) % thread_count;
+                // TODO offset n as well (?)
+                for (size_t n = 0; n < node_count; ++n) {
+                    double my_distance = my_nodes[n].new_distance.load(std::memory_order_relaxed);
+                    double other_distance = global_nodes[thread][n].new_distance.load(std::memory_order_relaxed);
+                    if (my_distance < other_distance) {
+                        global_nodes[thread][n].new_distance.store(my_distance, std::memory_order_relaxed);
+                    }
+                }
+#pragma omp barrier
+            }
+            BOOST_ASSERT(distance_queue.empty());
+            for (auto& node : my_nodes) {
+                double new_distance = node.new_distance.load(std::memory_order_relaxed);
+                if (new_distance < node.distance) {
+                    node.distance = new_distance;
+                    node.predecessor = -2;
+                    if (node.state == state::fringe) {
+                        distance_queue.update(node.distance_queue_handle);
+                    } else {
+                        node.distance_queue_handle = distance_queue.push(&node);
+                        node.state = state::fringe;
+                    }
                 }
             }
-
+            if (!distance_queue.empty()) {
+                global_continue->store(true, std::memory_order_relaxed);
+            }
 #pragma omp barrier
+            if (!global_continue->load(std::memory_order_relaxed)) {
+                break;
+            }
         }
 
         const auto end_time = std::chrono::steady_clock::now();
@@ -473,8 +451,8 @@ int main() {
             return std::max(a, b);
         });
 
-        // I have to destroy these in the thread, because they use the thread local allocator!
-        my_settle_todo = carray<std::vector<relaxation, thread_local_allocator<relaxation>>>();
+#pragma omp single
+        { std::cout << "Global phases: " << global_phase << "\n"; }
     }
 
     std::cout << "Par time: " << *global_max_time << " (incl. " << *global_max_init_time << " init time)\n";
