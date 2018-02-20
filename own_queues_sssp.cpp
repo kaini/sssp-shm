@@ -5,9 +5,15 @@
 
 using namespace boost::heap;
 
-sssp::own_queues_sssp::own_queues_sssp(size_t node_count) : m_node_count(node_count) {
+sssp::own_queues_sssp::own_queues_sssp(size_t node_count) : m_node_count(node_count), m_seen_distances(node_count) {
+    for (auto& d : m_seen_distances) {
+        d.store(INFINITY, std::memory_order_relaxed);
+    }
 #if defined(CRAUSER)
     m_min_incoming = carray<std::atomic<double>>(node_count);
+    for (auto& d : m_min_incoming) {
+        d.store(INFINITY, std::memory_order_relaxed);
+    }
 #endif
 }
 
@@ -49,15 +55,13 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     carray<crauser_out_queue_t::handle_type> crauser_out_queue_handles(my_node_count);
 #endif
 
-    threads.single_collective([&] { m_relaxations = carray<carray<relaxations>>(threads.thread_count()); });
-    carray<relaxations>& my_relaxations = m_relaxations[thread_rank];
-    my_relaxations = carray<relaxations>(threads.thread_count());
+    threads.single_collective(
+        [&] { m_relaxations = carray<tbb::concurrent_vector<relaxation>>(threads.thread_count()); });
+    tbb::concurrent_vector<relaxation>& my_relaxations = m_relaxations[thread_rank];
 
     const auto start_time = std::chrono::steady_clock::now();
 
 #if defined(CRAUSER)
-    threads.for_each_collective(
-        thread_rank, m_min_incoming, [&](std::atomic<double>& d) { d.store(INFINITY, std::memory_order_relaxed); });
     threads.for_each_collective(thread_rank, edges, [&](const array_slice<const edge>& node) {
         for (const edge& edge : node) {
             atomic_min(m_min_incoming[edge.destination], edge.cost);
@@ -109,14 +113,16 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         states[node] = state::settled;
 
         const size_t node_id = node * threads.thread_count() + thread_rank;
+        m_seen_distances[node_id].store(-0.0, std::memory_order_relaxed);
+
         for (const edge& e : edges[node_id]) {
-            int dest_thread = e.destination % threads.thread_count();
-            if (dest_thread == thread_rank) {
-                settle_edge(e.destination / threads.thread_count(), node_id, distances[node] + e.cost);
-            } else {
-                auto iter = my_relaxations[dest_thread].find(e.destination);
-                if (iter == my_relaxations[dest_thread].end() || distances[node] + e.cost < iter->second.distance) {
-                    my_relaxations[dest_thread][e.destination] = relaxation{node_id, distances[node] + e.cost};
+            if (distances[node] + e.cost < m_seen_distances[e.destination].load(std::memory_order_relaxed)) {
+                m_seen_distances[e.destination].store(distances[node] + e.cost, std::memory_order_relaxed);
+                int dest_thread = e.destination % threads.thread_count();
+                if (dest_thread == thread_rank) {
+                    settle_edge(e.destination / threads.thread_count(), node_id, distances[node] + e.cost);
+                } else {
+                    m_relaxations[dest_thread].push_back(relaxation{e.destination, node_id, distances[node] + e.cost});
                 }
             }
         }
@@ -127,10 +133,6 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
 
     for (int phase = 0;; ++phase) {
-        for (relaxations& rs : my_relaxations) {
-            rs.clear();
-        }
-
 #if defined(DIJKSTRA)
 #error todo
 #elif defined(CRAUSER)
@@ -158,12 +160,10 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
         threads.barrier_collective();
 
-        for (int raw_thread = 1; raw_thread < threads.thread_count(); ++raw_thread) {
-            int thread = (raw_thread + thread_rank) % threads.thread_count();
-            for (const auto& r : m_relaxations[thread][thread_rank]) {
-                settle_edge(r.first / threads.thread_count(), r.second.predecessor, r.second.distance);
-            }
+        for (const relaxation& r : my_relaxations) {
+            settle_edge(r.node / threads.thread_count(), r.predecessor, r.distance);
         }
+        my_relaxations.clear();
 
         threads.barrier_collective();
     }
@@ -179,6 +179,4 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     threads.reduce_linear_collective(m_init_time,
                                      (after_init_time - start_time).count() / 1000000000.0,
                                      [](double a, double b) { return std::max(a, b); });
-
-    my_relaxations = carray<relaxations>();
 }

@@ -289,8 +289,12 @@ static void generate_edges_collective(thread_group& threads,
     BOOST_ASSERT(edge_count == edge_at);
 }
 
-int main() {
-    const int thread_count = 2; // omp_get_max_threads();
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cerr << "args ...\n";
+        return EXIT_FAILURE;
+    }
+    const int thread_count = atoi(argv[1]); // omp_get_max_threads();
 
     hwloc_topology_t topo;
     hwloc_topology_init(&topo);

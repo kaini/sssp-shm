@@ -5,6 +5,7 @@
 #include "graph.hpp"
 #include "thread_local_allocator.hpp"
 #include <mutex>
+#include <tbb/concurrent_vector.h>
 #include <unordered_map>
 
 namespace sssp {
@@ -23,18 +24,20 @@ class own_queues_sssp {
 
   private:
     struct relaxation {
+        size_t node;
         size_t predecessor;
         double distance;
     };
 
-    using relaxations = std::unordered_map<size_t,
+    /*using relaxations = std::unordered_map<size_t,
                                            relaxation,
                                            std::hash<size_t>,
                                            std::equal_to<size_t>,
-                                           thread_local_allocator<std::pair<size_t, relaxation>>>;
+                                           thread_local_allocator<std::pair<size_t, relaxation>>>;*/
 
     size_t m_node_count;
-    carray<carray<relaxations>> m_relaxations;
+    carray<tbb::concurrent_vector<relaxation>> m_relaxations;
+    carray<std::atomic<double>> m_seen_distances;
 
     std::atomic<double> m_time;
     std::atomic<double> m_init_time;
