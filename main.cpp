@@ -1,5 +1,6 @@
 #include "array_slice.hpp"
 #include "carray.hpp"
+#include "shared_queue_sssp.hpp"
 #include "thread_local_allocator.hpp"
 #include <atomic>
 #include <boost/heap/fibonacci_heap.hpp>
@@ -15,6 +16,7 @@
 #include <omp.h>
 #include <random>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -86,12 +88,6 @@ using thread_local_crauser_in_queue =
     fibonacci_heap<node*, compare<cmp_crauser_in>, allocator<thread_local_allocator<node*>>>;
 #endif
 
-struct edge {
-    size_t source;
-    size_t destination;
-    double cost;
-};
-
 struct relaxation {
     size_t node;
     size_t predecessor;
@@ -150,7 +146,9 @@ template <typename T, typename Op> static double reduce(std::atomic<T>& storage,
     return storage.load(std::memory_order_relaxed);
 }
 
-static std::tuple<bool, double> validate(const carray<carray<node>>& nodes, size_t node_count) {
+static std::tuple<bool, double> validate(array_slice<array_slice<const edge>> nodes,
+                                         array_slice<const result> reference) {
+    size_t node_count = nodes.size();
     carray<double> distances(node_count, INFINITY);
     carray<size_t> predecessors(node_count, -1);
     carray<state> states(node_count, state::unexplored);
@@ -174,18 +172,16 @@ static std::tuple<bool, double> validate(const carray<carray<node>>& nodes, size
         distance_queue.pop();
         states[node] = state::settled;
 
-        for (size_t thread = 0; thread < nodes.size(); ++thread) {
-            for (const edge& edge : nodes[thread][node].edges) {
-                if (states[edge.destination] != state::settled &&
-                    distances[node] + edge.cost < distances[edge.destination]) {
-                    distances[edge.destination] = distances[node] + edge.cost;
-                    predecessors[edge.destination] = node;
-                    if (states[edge.destination] == state::unexplored) {
-                        states[edge.destination] = state::fringe;
-                        distance_queue_handles[edge.destination] = distance_queue.push(edge.destination);
-                    } else {
-                        distance_queue.update(distance_queue_handles[edge.destination]);
-                    }
+        for (const edge& edge : nodes[node]) {
+            if (states[edge.destination] != state::settled &&
+                distances[node] + edge.cost < distances[edge.destination]) {
+                distances[edge.destination] = distances[node] + edge.cost;
+                predecessors[edge.destination] = node;
+                if (states[edge.destination] == state::unexplored) {
+                    states[edge.destination] = state::fringe;
+                    distance_queue_handles[edge.destination] = distance_queue.push(edge.destination);
+                } else {
+                    distance_queue.update(distance_queue_handles[edge.destination]);
                 }
             }
         }
@@ -194,21 +190,16 @@ static std::tuple<bool, double> validate(const carray<carray<node>>& nodes, size
     const auto end_time = std::chrono::steady_clock::now();
 
     bool valid = true;
-    for (size_t t = 0; t < nodes.size(); ++t) {
-        std::cerr << "Validating thread " << t << "\n";
-        for (size_t i = 0; i < node_count; ++i) {
-            if (nodes[t][i].predecessor != size_t(-2)) {
-                if (nodes[t][i].distance != distances[i]) {
-                    std::cerr << "Invalid distance for node " << i << " " << nodes[t][i].distance
-                              << "!=" << distances[i] << "\n";
-                    valid = false;
-                }
-                if (nodes[t][i].predecessor != predecessors[i]) {
-                    std::cerr << "Invalid predecessor for node " << i << " " << nodes[t][i].predecessor
-                              << "!=" << predecessors[i] << "\n";
-                    valid = false;
-                }
-            }
+    for (size_t i = 0; i < node_count; ++i) {
+        if (reference[i].distance != distances[i]) {
+            std::cerr << "Invalid distance for node " << i << " " << reference[i].distance << "!=" << distances[i]
+                      << "\n";
+            valid = false;
+        }
+        if (reference[i].predecessor != predecessors[i]) {
+            std::cerr << "Invalid predecessor for node " << i << " " << reference[i].predecessor
+                      << "!=" << predecessors[i] << "\n";
+            valid = false;
         }
     }
 
@@ -256,6 +247,47 @@ static void generate_graph(carray<edge>& edges,
     BOOST_ASSERT(edge_count == edge_at);
 }
 
+// This allows double edges and self edges, but it does not matter too much.
+static void generate_edges_collective(thread_group& threads,
+                                      int thread_rank,
+                                      size_t node_count,
+                                      unsigned int seed,
+                                      double edge_chance,
+                                      carray<carray<edge>>& out_edges_by_rank,
+                                      carray<array_slice<const edge>>& out_edges_by_node) {
+    threads.single_collective([&] {
+        out_edges_by_rank = carray<carray<edge>>(threads.thread_count());
+        out_edges_by_node = carray<array_slice<const edge>>(node_count);
+    });
+
+    std::mt19937 edge_count_rng(seed);
+    std::binomial_distribution<size_t> edge_count_dist(node_count, edge_chance);
+    size_t edge_count = 0;
+    threads.for_each_collective(thread_rank, out_edges_by_node, [&](array_slice<const edge>&) {
+        edge_count += edge_count_dist(edge_count_rng);
+    });
+    carray<edge>& my_edges = out_edges_by_rank[thread_rank] = carray<edge>(edge_count);
+
+    edge_count_rng.seed(seed);
+    edge_count_dist.reset();
+    size_t edge_at = 0;
+    std::mt19937 other_rng(seed + 1);
+    std::uniform_int_distribution<size_t> node_dist(0, node_count - 1);
+    std::uniform_real_distribution<double> edge_cost_dist(0.0, 1.0);
+    threads.for_each_with_index_collective(
+        thread_rank, out_edges_by_node, [&](size_t i, array_slice<const edge>& edges) {
+            size_t node_edge_count = edge_count_dist(edge_count_rng);
+            edges = array_slice<const edge>(&my_edges[edge_at], node_edge_count);
+            for (edge& e : array_slice<edge>(&my_edges[edge_at], node_edge_count)) {
+                e.source = i;
+                e.destination = node_dist(other_rng);
+                e.cost = edge_cost_dist(other_rng);
+            }
+            edge_at += node_edge_count;
+        });
+    BOOST_ASSERT(edge_count == edge_at);
+}
+
 int main() {
     const int thread_count = omp_get_max_threads();
 
@@ -288,12 +320,51 @@ int main() {
         std::cerr << std::setw(4) << layer.count << "x " << layer.name << "\n";
     }
 
-    const size_t node_count = 100061;
+    const size_t node_count = 200000;
     const double edge_chance = 1000.0 / node_count;
     const int seed = 42;
 
     std::cout << "Thread count: " << thread_count << "\n";
 
+#if 1
+    std::vector<std::thread> thread_handles;
+    thread_group threads(thread_count);
+    carray<carray<edge>> edges_by_rank;
+    carray<array_slice<const edge>> edges_by_node;
+    carray<result> result_by_node(node_count);
+    shared_queue_sssp algorithm(node_count, edges_by_node);
+    for (int rank = 0; rank < thread_count; ++rank) {
+        thread_handles.emplace_back(std::thread([&, rank] {
+            generate_edges_collective(threads,
+                                      rank,
+                                      node_count,
+                                      static_cast<unsigned int>(rank * seed),
+                                      edge_chance,
+                                      edges_by_rank,
+                                      edges_by_node);
+            algorithm.run_collective(threads, rank, result_by_node);
+        }));
+    }
+    for (auto& t : thread_handles) {
+        t.join();
+    }
+
+    std::cout << "Par time: " << algorithm.time() << " (incl. " << algorithm.init_time() << " init)\n";
+    bool valid = true;
+    double seq_time = 0.0;
+    std::tie(valid, seq_time) = validate(edges_by_node, result_by_node);
+
+    std::cout << "Seq time: " << seq_time << "\n";
+    std::cout << "Speedup: " << (seq_time / algorithm.time())
+              << "  Efficiency: " << (seq_time / algorithm.time() / thread_count) << "\n";
+
+    if (valid) {
+        return EXIT_SUCCESS;
+    } else {
+        return EXIT_FAILURE;
+    }
+
+#else
     // Maps thread_num -> local edges
     // The nodes contain a pointers into the edges array
     carray<carray<edge>> global_edges(thread_count);
@@ -470,4 +541,5 @@ int main() {
     } else {
         return EXIT_FAILURE;
     }
+#endif
 }
