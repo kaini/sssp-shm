@@ -2,7 +2,7 @@
 #include "collective_functions.hpp"
 #include <chrono>
 
-sssp::shared_queue_sssp::shared_queue_sssp(size_t node_count, const carray<array_slice<const edge>>& edges)
+sssp::shared_queue_sssp::shared_queue_sssp(size_t node_count, array_slice<array_slice<const edge>> edges)
     : m_node_count(node_count), m_edges(edges), m_nodes(node_count) {}
 
 void sssp::shared_queue_sssp::run_collective(thread_group& threads, int thread_rank, array_slice<result> out_result) {

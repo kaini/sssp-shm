@@ -2,6 +2,7 @@
 #include "array_slice.hpp"
 #include "carray.hpp"
 #include "collective_functions.hpp"
+#include "graph.hpp"
 #include "thread_local_allocator.hpp"
 #include <boost/heap/fibonacci_heap.hpp>
 #include <boost/thread/barrier.hpp>
@@ -10,21 +11,6 @@
 #include <tbb/concurrent_priority_queue.h>
 
 namespace sssp {
-
-struct edge {
-    edge() {}
-    edge(size_t s, size_t d, double c) : source(s), destination(d), cost(c) {}
-    size_t source = -1;
-    size_t destination = -1;
-    double cost = 0.0;
-};
-
-struct result {
-    result() {}
-    result(double distance, size_t predecessor) : distance(distance), predecessor(predecessor) {}
-    double distance = INFINITY;
-    size_t predecessor = -1;
-};
 
 class shared_queue_sssp {
     struct node;
@@ -55,7 +41,7 @@ class shared_queue_sssp {
     };
 
   public:
-    shared_queue_sssp(size_t node_count, const carray<array_slice<const edge>>& edges);
+    shared_queue_sssp(size_t node_count, array_slice<array_slice<const edge>> edges);
 
     // Runs the parallel SSSP. Has to be called by all participating
     // threads at the same time.
@@ -70,7 +56,7 @@ class shared_queue_sssp {
     // TODO: store result in node and provide an iterator over it
 
     size_t m_node_count;
-    const carray<array_slice<const edge>>& m_edges;
+    array_slice<array_slice<const edge>> m_edges;
     carray<node> m_nodes;
     tbb::concurrent_priority_queue<queued_node> m_distance_queue;
     std::atomic<bool> m_done;

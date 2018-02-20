@@ -30,6 +30,10 @@ class thread_group {
         barrier_collective();
     }
 
+    size_t for_each_count(int thread_rank, size_t count) const {
+        return count / m_thread_count + ((thread_rank < count % m_thread_count) ? 1 : 0);
+    }
+
     // Executes the function once in the group.
     template <typename F> void single_collective(F&& fun) {
         m_single_do.store(true, std::memory_order_relaxed);
@@ -60,5 +64,12 @@ class thread_group {
     boost::barrier m_barrier;
     std::atomic<bool> m_single_do;
 };
+
+template <typename T> void atomic_min(std::atomic<T>& destination, const double value) {
+    double current_value = destination.load(std::memory_order_relaxed);
+    while (value < current_value && !destination.compare_exchange_weak(
+                                        current_value, value, std::memory_order_relaxed, std::memory_order_relaxed)) {
+    }
+}
 
 } // namespace sssp

@@ -1,5 +1,6 @@
 #include "array_slice.hpp"
 #include "carray.hpp"
+#include "own_queues_sssp.hpp"
 #include "shared_queue_sssp.hpp"
 #include "thread_local_allocator.hpp"
 #include <atomic>
@@ -289,7 +290,7 @@ static void generate_edges_collective(thread_group& threads,
 }
 
 int main() {
-    const int thread_count = omp_get_max_threads();
+    const int thread_count = 2; // omp_get_max_threads();
 
     hwloc_topology_t topo;
     hwloc_topology_init(&topo);
@@ -320,7 +321,7 @@ int main() {
         std::cerr << std::setw(4) << layer.count << "x " << layer.name << "\n";
     }
 
-    const size_t node_count = 200000;
+    const size_t node_count = 150000;
     const double edge_chance = 1000.0 / node_count;
     const int seed = 42;
 
@@ -332,7 +333,8 @@ int main() {
     carray<carray<edge>> edges_by_rank;
     carray<array_slice<const edge>> edges_by_node;
     carray<result> result_by_node(node_count);
-    shared_queue_sssp algorithm(node_count, edges_by_node);
+    // shared_queue_sssp algorithm(node_count, edges_by_node);
+    own_queues_sssp algorithm(node_count);
     for (int rank = 0; rank < thread_count; ++rank) {
         thread_handles.emplace_back(std::thread([&, rank] {
             generate_edges_collective(threads,
@@ -342,7 +344,7 @@ int main() {
                                       edge_chance,
                                       edges_by_rank,
                                       edges_by_node);
-            algorithm.run_collective(threads, rank, result_by_node);
+            algorithm.run_collective(threads, rank, edges_by_node, result_by_node);
         }));
     }
     for (auto& t : thread_handles) {

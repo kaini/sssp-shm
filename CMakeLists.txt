@@ -76,12 +76,15 @@ function (add_variant NAME)
 		buddy_allocator.hpp
 		carray.hpp
 		collective_functions.hpp
+		graph.hpp
+		own_queues_sssp.hpp
 		shared_queue_sssp.hpp
 		thread_local_allocator.hpp
 	)
 	set (SOURCES
 		buddy_allocator.cpp
 		main.cpp
+		own_queues_sssp.cpp
 		shared_queue_sssp.cpp
 		thread_local_allocator.cpp
 	)

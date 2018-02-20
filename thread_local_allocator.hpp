@@ -19,14 +19,14 @@ template <typename T> class thread_local_allocator {
     template <typename OtherT> struct rebind { using other = thread_local_allocator<OtherT>; };
 
     thread_local_allocator() {}
-    template <typename OtherT> thread_local_allocator(const thread_local_allocator<OtherT>& other) {}
-    thread_local_allocator(const thread_local_allocator<T>& other) {}
-    thread_local_allocator(const thread_local_allocator<T>&& other) {}
-    thread_local_allocator& operator=(const thread_local_allocator<T>& other) { return *this; }
-    thread_local_allocator& operator=(const thread_local_allocator<T>&& other) { return *this; }
+    template <typename OtherT> thread_local_allocator(const thread_local_allocator<OtherT>&) {}
+    thread_local_allocator(const thread_local_allocator<T>&) {}
+    thread_local_allocator(const thread_local_allocator<T>&&) {}
+    thread_local_allocator& operator=(const thread_local_allocator<T>&) { return *this; }
+    thread_local_allocator& operator=(const thread_local_allocator<T>&&) { return *this; }
 
-    template <typename OtherT> bool operator==(const thread_local_allocator<OtherT>& other) { return true; }
-    template <typename OtherT> bool operator!=(const thread_local_allocator<OtherT>& other) { return false; }
+    template <typename OtherT> bool operator==(const thread_local_allocator<OtherT>&) { return true; }
+    template <typename OtherT> bool operator!=(const thread_local_allocator<OtherT>&) { return false; }
 
     T* allocate(size_t n) { return buddy_allocator<T>(&thread_local_allocator_memory).allocate(n); }
     void deallocate(T* ptr, size_t n) { return buddy_allocator<T>(&thread_local_allocator_memory).deallocate(ptr, n); }
