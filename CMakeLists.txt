@@ -48,14 +48,15 @@ add_library (tbb INTERFACE)
 find_path (Tbb_INCLUDE_DIR tbb/parallel_for.h)
 target_include_directories (tbb INTERFACE ${Tbb_INCLUDE_DIR})
 find_library (Tbb_LIBRARY tbb)
+find_library (Tbb_MALLOC_LIBRARY tbbmalloc_proxy)
 if (MSVC)
 	find_library (Tbb_Debug_LIBRARY tbb_debug)
 else ()
 	set (Tbb_Debug_LIBRARY ${Tbb_LIBRARY})
 endif ()
 target_link_libraries (tbb
-	INTERFACE optimized ${Tbb_LIBRARY}
-	INTERFACE debug ${Tbb_Debug_LIBRARY}
+	INTERFACE optimized ${Tbb_LIBRARY} ${Tbb_MALLOC_LIBRARY}
+	INTERFACE debug ${Tbb_Debug_LIBRARY} ${Tbb_MALLOC_LIBRARY}
 )
 
 # sssp-mpi executable
