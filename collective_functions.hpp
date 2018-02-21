@@ -73,9 +73,8 @@ class thread_group {
 };
 
 template <typename T> void atomic_min(std::atomic<T>& destination, const double value) {
-    double current_value = destination.load(std::memory_order_relaxed);
-    while (value < current_value && !destination.compare_exchange_weak(
-                                        current_value, value, std::memory_order_relaxed, std::memory_order_relaxed)) {
+    while (value < destination.load(std::memory_order_relaxed)) {
+        destination.store(value, std::memory_order_relaxed);
     }
 }
 

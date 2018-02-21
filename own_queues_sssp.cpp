@@ -162,18 +162,6 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
         threads.barrier_collective();
 
-        static size_t rsum = 0;
-        std::unordered_set<size_t> rcnt;
-        for (const auto& r : my_relaxations) {
-            rcnt.emplace(r.node);
-        }
-        threads.critical_section([&] {
-            rsum += my_relaxations.size() - rcnt.size();
-            std::cout << thread_rank << ": " << (my_relaxations.size() - rcnt.size()) << " "
-                      << (double(my_relaxations.size() - rcnt.size()) / my_relaxations.size() * 100)
-                      << " %  Total: " << rsum << "\n";
-        });
-
         for (const relaxation& r : my_relaxations) {
             settle_edge(r.node / threads.thread_count(), r.predecessor, r.distance);
         }
