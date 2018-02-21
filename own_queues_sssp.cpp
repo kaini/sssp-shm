@@ -59,7 +59,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         if (min_outgoing[n].empty()) {
             return INFINITY;
         } else {
-            return min_outgoing[n].back().cost;
+            return min_outgoing[n][0].cost;
         }
     };
 #endif
@@ -90,7 +90,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #if defined(CRAUSERDYN)
         auto& slot = min_outgoing[n / threads.thread_count()];
         slot.insert(slot.end(), node.begin(), node.end());
-        std::sort(slot.begin(), slot.end(), [](const auto& a, const auto& b) { return a.cost > b.cost; });
+        std::make_heap(slot.begin(), slot.end(), [](const auto& a, const auto& b) { return a.cost > b.cost; });
 #endif
     });
     for (size_t i = 0; i < my_node_count; ++i) {
@@ -193,8 +193,11 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             if (states[n] != state::settled) {
                 bool changed = false;
                 while (!min_outgoing[n].empty() &&
-                       m_seen_distances[min_outgoing[n].back().source].load(std::memory_order_relaxed) <= 0) {
+                       m_seen_distances[min_outgoing[n][0].source].load(std::memory_order_relaxed) <= 0) {
                     changed = true;
+                    std::pop_heap(min_outgoing[n].begin(), min_outgoing[n].end(), [](const auto& a, const auto& b) {
+                        return a.cost > b.cost;
+                    });
                     min_outgoing[n].pop_back();
                 }
                 if (changed && states[n] == state::fringe) {
