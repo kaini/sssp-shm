@@ -15,10 +15,9 @@ if (MSVC)
 	set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++${CMAKE_CXX_STANDARD}")
 	add_definitions (-D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX)
 else ()
-	set (CMAKE_CXX_FLAGS "-Wall -Wextra -pedantic -m64")
-	set (CMAKE_CXX_FLAGS_DEBUG "-O0 -g3")
-	set (CMAKE_CXX_FLAGS_RELEASE "-O3")
-	set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3")
+	set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64")
+	set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
+	set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O3")
 	if (CMAKE_SYSTEM_NAME STREQUAL "SunOS")
 		link_libraries (atomic)
 		set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -mcpu=native")
@@ -31,14 +30,6 @@ endif ()
 
 # Find external libraries
 #########################
-add_library (openmp INTERFACE)
-find_package (OpenMP REQUIRED)
-target_compile_options (openmp INTERFACE ${OpenMP_CXX_FLAGS})
-if (NOT MSVC)
-	# TODO this is a cmake hack, nicer possible in 3.10.
-	target_link_libraries (openmp INTERFACE "${OpenMP_CXX_FLAGS}")
-endif ()
-
 add_library (boost INTERFACE)
 find_package (Boost 1.65.0 REQUIRED COMPONENTS date_time thread system)
 target_include_directories (boost SYSTEM INTERFACE ${Boost_INCLUDE_DIRS})
@@ -87,7 +78,7 @@ function (add_variant NAME)
 		thread_local_allocator.cpp
 	)
 	add_executable (sssp-shm-${NAME}${NUMASTR} ${HEADERS} ${SOURCES})
-	target_link_libraries (sssp-shm-${NAME}${NUMASTR} PRIVATE boost openmp hwloc tbb)
+	target_link_libraries (sssp-shm-${NAME}${NUMASTR} PRIVATE boost hwloc tbb)
 	target_compile_definitions (sssp-shm-${NAME}${NUMASTR} PRIVATE -D${UPPER_NAME})
 endfunction ()
 

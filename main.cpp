@@ -325,7 +325,7 @@ int main(int argc, char* argv[]) {
     }
 
     const size_t node_count = 150000;
-    const double edge_chance = 1000.0 / node_count;
+    const double edge_chance = 400.0 / node_count;
     const int seed = 42;
 
     std::cout << "Thread count: " << thread_count << "\n";

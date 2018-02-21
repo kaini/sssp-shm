@@ -36,7 +36,7 @@ class own_queues_sssp {
     std::atomic<double> m_time;
     std::atomic<double> m_init_time;
 
-#if defined(CRAUSER)
+#if defined(CRAUSER) || defined(CRAUSERDYN)
     carray<std::atomic<double>> m_min_incoming;
     std::atomic<double> m_in_threshold;
     std::atomic<double> m_out_threshold;
