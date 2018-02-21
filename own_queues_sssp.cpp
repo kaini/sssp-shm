@@ -2,6 +2,8 @@
 #include "thread_local_allocator.hpp"
 #include <boost/heap/fibonacci_heap.hpp>
 #include <chrono>
+#include <iostream>
+#include <unordered_set>
 
 using namespace boost::heap;
 
@@ -113,7 +115,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         states[node] = state::settled;
 
         const size_t node_id = node * threads.thread_count() + thread_rank;
-        m_seen_distances[node_id].store(-0.0, std::memory_order_relaxed);
+        m_seen_distances[node_id].store(0.0, std::memory_order_relaxed);
 
         for (const edge& e : edges[node_id]) {
             if (distances[node] + e.cost < m_seen_distances[e.destination].load(std::memory_order_relaxed)) {
@@ -159,6 +161,18 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
         threads.barrier_collective();
+
+        static size_t rsum = 0;
+        std::unordered_set<size_t> rcnt;
+        for (const auto& r : my_relaxations) {
+            rcnt.emplace(r.node);
+        }
+        threads.critical_section([&] {
+            rsum += my_relaxations.size() - rcnt.size();
+            std::cout << thread_rank << ": " << (my_relaxations.size() - rcnt.size()) << " "
+                      << (double(my_relaxations.size() - rcnt.size()) / my_relaxations.size() * 100)
+                      << " %  Total: " << rsum << "\n";
+        });
 
         for (const relaxation& r : my_relaxations) {
             settle_edge(r.node / threads.thread_count(), r.predecessor, r.distance);

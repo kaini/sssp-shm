@@ -29,12 +29,6 @@ class own_queues_sssp {
         double distance;
     };
 
-    /*using relaxations = std::unordered_map<size_t,
-                                           relaxation,
-                                           std::hash<size_t>,
-                                           std::equal_to<size_t>,
-                                           thread_local_allocator<std::pair<size_t, relaxation>>>;*/
-
     size_t m_node_count;
     carray<tbb::concurrent_vector<relaxation>> m_relaxations;
     carray<std::atomic<double>> m_seen_distances;

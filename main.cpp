@@ -343,16 +343,14 @@ int main(int argc, char* argv[]) {
         thread_handles.emplace_back(std::thread([&, rank] {
             hwloc_obj_t pu = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, rank);
             if (!pu) {
-                std::cerr << "Could not find enough PUs!\n";
-                std::exit(1);
+                throw std::runtime_error("Could not find enough PUs.");
             }
             hwloc_obj_t core = hwloc_get_ancestor_obj_by_type(topo, HWLOC_OBJ_CORE, pu);
             if (!core) {
-                std::cerr << "Found a PU without a core???\n";
-                std::exit(1);
+                throw std::runtime_error("Found a PU without a core.");
             }
             if (hwloc_set_cpubind(topo, core->cpuset, HWLOC_CPUBIND_THREAD | HWLOC_CPUBIND_STRICT) == -1) {
-                std::cerr << "Could not bind a thread, ignoring ...\n";
+                threads.critical_section([] { std::cerr << "Could not bind a thread, ignoring ...\n"; });
             }
 
             generate_edges_collective(threads,

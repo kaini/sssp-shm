@@ -1,5 +1,6 @@
 #pragma once
 #include <boost/thread/barrier.hpp>
+#include <mutex>
 
 namespace sssp {
 
@@ -9,6 +10,11 @@ class thread_group {
     thread_group(int thread_count) : m_thread_count(thread_count), m_barrier(thread_count), m_single_do(false) {}
 
     int thread_count() const { return m_thread_count; }
+
+    template <typename F> void critical_section(F&& fun) {
+        std::lock_guard<std::mutex> lock(m_critical_section_mutex);
+        fun();
+    }
 
     // Calls fun once on each element of the collection in parallel.
     template <typename Collection, typename F>
@@ -31,7 +37,7 @@ class thread_group {
     }
 
     size_t for_each_count(int thread_rank, size_t count) const {
-        return count / m_thread_count + ((thread_rank < count % m_thread_count) ? 1 : 0);
+        return count / m_thread_count + ((thread_rank < static_cast<int>(count % m_thread_count)) ? 1 : 0);
     }
 
     // Executes the function once in the group.
@@ -63,6 +69,7 @@ class thread_group {
     int m_thread_count;
     boost::barrier m_barrier;
     std::atomic<bool> m_single_do;
+    std::mutex m_critical_section_mutex;
 };
 
 template <typename T> void atomic_min(std::atomic<T>& destination, const double value) {
