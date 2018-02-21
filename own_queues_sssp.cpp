@@ -54,14 +54,8 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     carray<double> min_outgoing(my_node_count, INFINITY);
     auto min_outgoing_value = [&](size_t n) { return min_outgoing[n]; };
 #elif defined(CRAUSERDYN)
-    carray<std::vector<edge, thread_local_allocator<edge>>> min_outgoing(my_node_count);
-    auto min_outgoing_value = [&](size_t n) -> double {
-        if (min_outgoing[n].empty()) {
-            return INFINITY;
-        } else {
-            return min_outgoing[n][0].cost;
-        }
-    };
+    carray<edge> min_outgoing(my_node_count, edge(-1, -1, INFINITY));
+    auto min_outgoing_value = [&](size_t n) -> double { return min_outgoing[n].cost; };
 #endif
     auto cmp_crauser_out = [&](size_t a, size_t b) {
         return distances[a] + min_outgoing_value(a) > distances[b] + min_outgoing_value(b);
@@ -85,13 +79,12 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             if (edge.cost < min_outgoing[n / threads.thread_count()]) {
                 min_outgoing[n / threads.thread_count()] = edge.cost;
             }
+#elif defined(CRAUSERDYN)
+            if (edge.cost < min_outgoing[n / threads.thread_count()].cost) {
+                min_outgoing[n / threads.thread_count()] = edge;
+            }
 #endif
         }
-#if defined(CRAUSERDYN)
-        auto& slot = min_outgoing[n / threads.thread_count()];
-        slot.insert(slot.end(), node.begin(), node.end());
-        std::make_heap(slot.begin(), slot.end(), [](const auto& a, const auto& b) { return a.cost > b.cost; });
-#endif
     });
     for (size_t i = 0; i < my_node_count; ++i) {
         min_incoming[i] = m_min_incoming[i * threads.thread_count() + thread_rank].load(std::memory_order_relaxed);
@@ -155,7 +148,8 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         settle_edge(0, -1, 0.0);
     }
 
-    for (int phase = 0;; ++phase) {
+    int phase;
+    for (phase = 0;; ++phase) {
 #if defined(CRAUSER) || defined(CRAUSERDYN)
         threads.reduce_linear_collective(m_in_threshold,
                                          distance_queue.empty() ? INFINITY : distances[distance_queue.top()],
@@ -190,15 +184,19 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
 #if defined(CRAUSERDYN)
         for (size_t n = 0; n < my_node_count; ++n) {
-            if (states[n] != state::settled) {
+            if (states[n] != state::settled && min_outgoing[n].cost != INFINITY) {
                 bool changed = false;
-                while (!min_outgoing[n].empty() &&
-                       m_seen_distances[min_outgoing[n][0].destination].load(std::memory_order_relaxed) <= 0) {
+                if (m_seen_distances[min_outgoing[n].destination].load(std::memory_order_relaxed) <= 0.0) {
                     changed = true;
-                    std::pop_heap(min_outgoing[n].begin(), min_outgoing[n].end(), [](const auto& a, const auto& b) {
-                        return a.cost > b.cost;
-                    });
-                    min_outgoing[n].pop_back();
+                    edge result(-1, -1, INFINITY);
+                    double min_cost = min_outgoing[n].cost;
+                    for (const auto& e : edges[n * threads.thread_count() + thread_rank]) {
+                        if (e.cost < result.cost && e.cost >= min_cost &&
+                            m_seen_distances[e.destination].load(std::memory_order_relaxed) > 0.0) {
+                            result = e;
+                        }
+                    }
+                    min_outgoing[n] = result;
                 }
                 if (changed && states[n] == state::fringe) {
                     distance_queue.update(distance_queue_handles[n]);
