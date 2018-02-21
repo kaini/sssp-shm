@@ -135,9 +135,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
 
     for (int phase = 0;; ++phase) {
-#if defined(DIJKSTRA)
-#error todo
-#elif defined(CRAUSER)
+#if defined(CRAUSER)
         threads.reduce_linear_collective(m_in_threshold,
                                          distance_queue.empty() ? INFINITY : distances[distance_queue.top()],
                                          [](auto a, auto b) { return std::min(a, b); });

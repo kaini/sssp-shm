@@ -78,14 +78,12 @@ function (add_variant NAME)
 		collective_functions.hpp
 		graph.hpp
 		own_queues_sssp.hpp
-		shared_queue_sssp.hpp
 		thread_local_allocator.hpp
 	)
 	set (SOURCES
 		buddy_allocator.cpp
 		main.cpp
 		own_queues_sssp.cpp
-		shared_queue_sssp.cpp
 		thread_local_allocator.cpp
 	)
 	add_executable (sssp-shm-${NAME}${NUMASTR} ${HEADERS} ${SOURCES})
@@ -93,5 +91,5 @@ function (add_variant NAME)
 	target_compile_definitions (sssp-shm-${NAME}${NUMASTR} PRIVATE -D${UPPER_NAME})
 endfunction ()
 
-add_variant (dijkstra)
 add_variant (crauser)
+add_variant (crauserdyn)

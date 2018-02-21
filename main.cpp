@@ -1,7 +1,6 @@
 #include "array_slice.hpp"
 #include "carray.hpp"
 #include "own_queues_sssp.hpp"
-#include "shared_queue_sssp.hpp"
 #include "thread_local_allocator.hpp"
 #include <atomic>
 #include <boost/heap/fibonacci_heap.hpp>
@@ -462,16 +461,7 @@ int main(int argc, char* argv[]) {
         int global_phase = 0;
         while (true) {
             global_phase += 1;
-#if defined(DIJKSTRA)
-            while (!distance_queue.empty()) {
-                node& node = *distance_queue.top();
-                distance_queue.pop();
-                node.state = state::settled;
-                for (const auto& edge : node.edges) {
-                    settle_edge(my_nodes[edge.destination], node.id, node.distance + edge.cost);
-                }
-            }
-#elif defined(CRAUSER)
+#if defined(CRAUSER)
             double min_distance = reduce(*global_min_distance,
                                          distance_queue.empty() ? INFINITY : distance_queue.top()->distance,
                                          [](double a, double b) { return std::min(a, b); });
