@@ -193,7 +193,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             if (states[n] != state::settled) {
                 bool changed = false;
                 while (!min_outgoing[n].empty() &&
-                       m_seen_distances[min_outgoing[n][0].source].load(std::memory_order_relaxed) <= 0) {
+                       m_seen_distances[min_outgoing[n][0].destination].load(std::memory_order_relaxed) <= 0) {
                     changed = true;
                     std::pop_heap(min_outgoing[n].begin(), min_outgoing[n].end(), [](const auto& a, const auto& b) {
                         return a.cost > b.cost;
