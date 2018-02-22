@@ -31,6 +31,8 @@ class own_queues_sssp {
                         array_slice<double> out_thread_distances,
                         array_slice<size_t> out_thread_predecessors);
 
+    double init_time() const { return m_init_time.load(std::memory_order_relaxed); }
+
   private:
     struct relaxation {
         size_t node;
@@ -47,6 +49,8 @@ class own_queues_sssp {
     std::atomic<double> m_in_threshold;
     std::atomic<double> m_out_threshold;
 #endif
+
+    std::atomic<double> m_init_time;
 };
 
 } // namespace sssp

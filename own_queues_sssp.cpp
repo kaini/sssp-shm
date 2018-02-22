@@ -88,6 +88,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
     threads.barrier_collective();
 
+    auto init_start = std::chrono::steady_clock::now();
 #if defined(CRAUSER) || defined(CRAUSERDYN)
     for (size_t n = 0; n < my_nodes_count; ++n) {
         for (const edge& edge : thread_edges_by_node[n]) {
@@ -108,6 +109,11 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         min_incoming[n] = m_min_incoming[n + my_nodes_start].load(std::memory_order_relaxed);
     }
 #endif
+    auto init_end = std::chrono::steady_clock::now();
+    threads.reduce_linear_collective(m_init_time,
+                                     0.0,
+                                     (init_end - init_start).count() / 1000000000.0,
+                                     [](double a, double b) { return std::max(a, b); });
 
     // Group shared data
     group_threads.single_collective([&] { m_seen_distances[group_rank] = carray<std::atomic<double>>(node_count); });
