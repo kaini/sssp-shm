@@ -78,22 +78,19 @@ static void generate_edges_collective(thread_group& threads,
                                       size_t node_count,
                                       double edge_chance,
                                       unsigned int seed,
-                                      carray<carray<edge>>& out_edges_by_thread,
-                                      carray<carray<array_slice<const edge>>>& out_edges_by_thread_by_node) {
-    threads.single_collective([&] {
-        out_edges_by_thread = carray<carray<edge>>(threads.thread_count());
-        out_edges_by_thread_by_node = carray<carray<array_slice<const edge>>>(threads.thread_count());
-    });
-    out_edges_by_thread_by_node[thread_rank] = carray<array_slice<const edge>>(node_count);
+                                      carray<edge>& out_thread_edges,
+                                      carray<array_slice<const edge>>& out_thread_edges_by_node) {
+    size_t my_nodes_count = threads.chunk_size(thread_rank, node_count);
+    size_t my_nodes_start = threads.chunk_start(thread_rank, node_count);
+    out_thread_edges_by_node = carray<array_slice<const edge>>(my_nodes_count);
 
     std::mt19937 edge_count_rng(seed);
-    // TODO fix the probability!!!!
-    std::binomial_distribution<size_t> edge_count_dist(node_count / threads.thread_count(), edge_chance);
+    std::binomial_distribution<size_t> edge_count_dist(node_count, edge_chance);
     size_t edge_count = 0;
-    for (size_t n = 0; n < node_count; ++n) {
+    for (size_t n = 0; n < my_nodes_count; ++n) {
         edge_count += edge_count_dist(edge_count_rng);
-    }
-    out_edges_by_thread[thread_rank] = carray<edge>(edge_count);
+    };
+    out_thread_edges = carray<edge>(edge_count);
 
     edge_count_rng.seed(seed);
     edge_count_dist.reset();
@@ -101,12 +98,12 @@ static void generate_edges_collective(thread_group& threads,
     std::mt19937 other_rng(seed + 1);
     std::uniform_int_distribution<size_t> node_dist(0, node_count - 1);
     std::uniform_real_distribution<double> edge_cost_dist(0.0, 1.0);
-    for (size_t n = 0; n < node_count; ++n) {
+    for (size_t n = 0; n < my_nodes_count; ++n) {
         size_t node_edge_count = edge_count_dist(edge_count_rng);
-        array_slice<edge> slice(&out_edges_by_thread[thread_rank][edge_at], node_edge_count);
-        out_edges_by_thread_by_node[thread_rank][n] = slice.as_const();
-        for (edge& e : slice) {
-            e.source = n;
+        array_slice<edge> edges(&out_thread_edges[edge_at], node_edge_count);
+        out_thread_edges_by_node[n] = edges.as_const();
+        for (edge& e : edges) {
+            e.source = n + my_nodes_start;
             e.destination = node_dist(other_rng);
             e.cost = edge_cost_dist(other_rng);
         }
@@ -116,49 +113,6 @@ static void generate_edges_collective(thread_group& threads,
 
     threads.barrier_collective();
 }
-
-#if 0
-// This allows double edges and self edges, but it does not matter too much.
-static void generate_edges_collective(thread_group& threads,
-                                      int thread_rank,
-                                      size_t node_count,
-                                      unsigned int seed,
-                                      double edge_chance,
-                                      carray<carray<edge>>& out_edges_by_rank,
-                                      carray<array_slice<const edge>>& out_edges_by_node) {
-    threads.single_collective([&] {
-        out_edges_by_rank = carray<carray<edge>>(threads.thread_count());
-        out_edges_by_node = carray<array_slice<const edge>>(node_count);
-    });
-
-    std::mt19937 edge_count_rng(seed);
-    std::binomial_distribution<size_t> edge_count_dist(node_count, edge_chance);
-    size_t edge_count = 0;
-    threads.for_each_collective(thread_rank, out_edges_by_node, [&](array_slice<const edge>&) {
-        edge_count += edge_count_dist(edge_count_rng);
-    });
-    carray<edge>& my_edges = out_edges_by_rank[thread_rank] = carray<edge>(edge_count);
-
-    edge_count_rng.seed(seed);
-    edge_count_dist.reset();
-    size_t edge_at = 0;
-    std::mt19937 other_rng(seed + 1);
-    std::uniform_int_distribution<size_t> node_dist(0, node_count - 1);
-    std::uniform_real_distribution<double> edge_cost_dist(0.0, 1.0);
-    threads.for_each_with_index_collective(
-        thread_rank, out_edges_by_node, [&](size_t i, array_slice<const edge>& edges) {
-            size_t node_edge_count = edge_count_dist(edge_count_rng);
-            edges = array_slice<const edge>(&my_edges[edge_at], node_edge_count);
-            for (edge& e : array_slice<edge>(&my_edges[edge_at], node_edge_count)) {
-                e.source = i;
-                e.destination = node_dist(other_rng);
-                e.cost = edge_cost_dist(other_rng);
-            }
-            edge_at += node_edge_count;
-        });
-    BOOST_ASSERT(edge_count == edge_at);
-}
-#endif
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
@@ -203,22 +157,23 @@ int main(int argc, char* argv[]) {
 
     const size_t node_count = 150000;
     const double edge_chance = 400.0 / node_count;
-    const int seed = 42;
+    const unsigned int seed = 42;
     const bool validate = true;
     std::cout << "Thread count: " << thread_count << "\n";
 
     std::vector<std::thread> thread_handles;
     thread_group threads(thread_count);
-    carray<carray<edge>> edges_by_thread;
-    carray<carray<array_slice<const edge>>> edges_by_thread_by_node;
+    carray<carray<edge>> edges_by_thread(thread_count);
+    carray<carray<array_slice<const edge>>> edges_by_thread_by_node(thread_count);
     carray<carray<double>> distances_by_thread(thread_count);
     carray<carray<size_t>> predecessors_by_thread(thread_count);
-    carray<double> time_by_thread(thread_count, 0.0);
+    carray<double> time_by_thread(thread_count, INFINITY);
     std::atomic<double> gen_time;
-    allreduce_sssp allreduce_sssp;
+    own_queues_sssp own_queues_sssp;
 
     for (int rank = 0; rank < thread_count; ++rank) {
         thread_handles.emplace_back(std::thread([&, rank] {
+            // Pin the threads
             hwloc_obj_t pu = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, rank);
             if (!pu) {
                 throw std::runtime_error("Could not find enough PUs.");
@@ -231,25 +186,16 @@ int main(int argc, char* argv[]) {
                 threads.critical_section([] { std::cerr << "Could not bind a thread, ignoring ...\n"; });
             }
 
-#if 0
-            generate_edges_collective(threads,
-                                      rank,
-                                      node_count,
-                                      static_cast<unsigned int>(rank * seed),
-                                      edge_chance,
-                                      edges_by_rank,
-                                      edges_by_node);
-            algorithm.run_collective(threads, rank, edges_by_node, result_by_node);
-#endif
-
+            // Generate the graph
             auto gen_start = std::chrono::steady_clock::now();
             generate_edges_collective(threads,
                                       rank,
                                       node_count,
                                       edge_chance,
-                                      static_cast<unsigned int>(rank * seed),
-                                      edges_by_thread,
-                                      edges_by_thread_by_node);
+                                      static_cast<unsigned int>(rank) * seed,
+                                      edges_by_thread[rank],
+                                      edges_by_thread_by_node[rank]);
+
             auto gen_end = std::chrono::steady_clock::now();
             threads.reduce_linear_collective(gen_time,
                                              (gen_end - gen_start).count() / 1000000000.0,
@@ -257,14 +203,13 @@ int main(int argc, char* argv[]) {
             threads.single_collective(
                 [&] { std::cout << "Gen time: " << gen_time.load(std::memory_order_relaxed) << "\n"; });
 
+            // Time & run the algorithm
             threads.barrier_collective();
             auto start = std::chrono::steady_clock::now();
-
-            carray<double>& distances = distances_by_thread[rank] = carray<double>(node_count, INFINITY);
-            distances[0] = 0.0;
-            carray<size_t>& predecessors = predecessors_by_thread[rank] = carray<size_t>(node_count, -1);
-            allreduce_sssp.run_collective(threads, rank, edges_by_thread_by_node[rank], distances, predecessors);
-
+            carray<array_slice<const edge>>& edges = edges_by_thread_by_node[rank];
+            carray<double>& distances = distances_by_thread[rank] = carray<double>(edges.size(), INFINITY);
+            carray<size_t>& predecessors = predecessors_by_thread[rank] = carray<size_t>(edges.size(), -1);
+            own_queues_sssp.run_collective(threads, rank, node_count, edges, distances, predecessors);
             auto end = std::chrono::steady_clock::now();
             time_by_thread[rank] = (end - start).count() / 1000000000.0;
         }));
@@ -288,12 +233,11 @@ int main(int argc, char* argv[]) {
         carray<array_slice<const edge>> edges_by_node(node_count);
         edge* edges_at = edges.begin();
         for (size_t n = 0; n < node_count; ++n) {
-            const edge* first_edge = edges_at;
-            for (int t = 0; t < thread_count; ++t) {
-                edges_at =
-                    std::copy(edges_by_thread_by_node[t][n].begin(), edges_by_thread_by_node[t][n].end(), edges_at);
-            }
-            edges_by_node[n] = array_slice<const edge>(first_edge, edges_at - first_edge);
+            int t = threads.chunk_thread_at(node_count, n);
+            size_t i = n - threads.chunk_start(t, node_count);
+            edge* edges_at_start = edges_at;
+            edges_at = std::copy(edges_by_thread_by_node[t][i].begin(), edges_by_thread_by_node[t][i].end(), edges_at);
+            edges_by_node[n] = array_slice<const edge>(edges_at_start, edges_at - edges_at_start);
         }
         BOOST_ASSERT(edges_at == edges.end());
 
@@ -308,20 +252,20 @@ int main(int argc, char* argv[]) {
         seq_time = (end - start).count() / 1000000000.0;
 
         carray<bool> checked(node_count, false);
-        for (int t = 0; t < thread_count; ++t) {
-            for (size_t n = 0; n < node_count; ++n) {
-                if (predecessors_by_thread[t][n] != -2) {
-                    checked[n] = true;
-                    if (distances_by_thread[t][n] != distances[n]) {
-                        std::cerr << "Thread " << t << ": Invalid distance for node " << n << " "
-                                  << distances_by_thread[t][n] << "!=" << distances[n] << "\n";
-                        valid = false;
-                    }
-                    if (predecessors_by_thread[t][n] != predecessors[n]) {
-                        std::cerr << "Thread " << t << ": Invalid predecessor for node " << n << " "
-                                  << predecessors_by_thread[t][n] << "!=" << predecessors[n] << "\n";
-                        valid = false;
-                    }
+        for (size_t n = 0; n < node_count; ++n) {
+            int t = threads.chunk_thread_at(node_count, n);
+            size_t i = n - threads.chunk_start(t, node_count);
+            if (predecessors_by_thread[t][i] != -2) {
+                checked[n] = true;
+                if (distances_by_thread[t][i] != distances[n]) {
+                    std::cerr << "Invalid distance for node " << n << " " << distances_by_thread[t][i]
+                              << "!=" << distances[n] << "\n";
+                    valid = false;
+                }
+                if (predecessors_by_thread[t][i] != predecessors[n]) {
+                    std::cerr << "Invalid predecessor for node " << n << " " << predecessors_by_thread[t][i]
+                              << "!=" << predecessors[n] << "\n";
+                    valid = false;
                 }
             }
         }

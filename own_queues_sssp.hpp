@@ -12,15 +12,18 @@ namespace sssp {
 
 class own_queues_sssp {
   public:
-    own_queues_sssp(size_t node_count);
-
+    // Runs the algorithm.
+    // node_count has to be the same on all threads and is the total node count.
+    // thread_edges_by_node, out_thread_distances and out_thread_predecessors have
+    // be as long as threads.chunk_size(thread_rank, node_count) and contain the information
+    // about the nodes starting at threads.chunk_start(thread_rank, node_count).
+    // The algorithm does not initialize out_thread_distances or out_thread_predecessors.
     void run_collective(thread_group& threads,
                         int thread_rank,
-                        array_slice<array_slice<const edge>> edges,
-                        array_slice<result> out_result);
-
-    double time() const { return m_time.load(std::memory_order_relaxed); }
-    double init_time() const { return m_init_time.load(std::memory_order_relaxed); }
+                        size_t node_count,
+                        array_slice<const array_slice<const edge>> thread_edges_by_node,
+                        array_slice<double> out_thread_distances,
+                        array_slice<size_t> out_thread_predecessors);
 
   private:
     struct relaxation {

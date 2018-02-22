@@ -7,98 +7,103 @@
 
 using namespace boost::heap;
 
-sssp::own_queues_sssp::own_queues_sssp(size_t node_count) : m_node_count(node_count), m_seen_distances(node_count) {
-    for (auto& d : m_seen_distances) {
-        d.store(INFINITY, std::memory_order_relaxed);
-    }
-#if defined(CRAUSER) || defined(CRAUSERDYN)
-    m_min_incoming = carray<std::atomic<double>>(node_count);
-    for (auto& d : m_min_incoming) {
-        d.store(INFINITY, std::memory_order_relaxed);
-    }
-#endif
+namespace {
+enum class state : unsigned char { unexplored, fringe, settled };
 }
 
 void sssp::own_queues_sssp::run_collective(thread_group& threads,
                                            int thread_rank,
-                                           array_slice<array_slice<const edge>> edges,
-                                           array_slice<result> out_result) {
-    enum class state {
-        unexplored,
-        fringe,
-        settled,
-    };
+                                           size_t node_count,
+                                           array_slice<const array_slice<const edge>> thread_edges_by_node,
+                                           array_slice<double> out_thread_distances,
+                                           array_slice<size_t> out_thread_predecessors) {
+    // Local data
+    const size_t my_nodes_count = threads.chunk_size(thread_rank, node_count);
+    const size_t my_nodes_start = threads.chunk_start(thread_rank, node_count);
+    const size_t my_nodes_end = my_nodes_start + my_nodes_count;
+    BOOST_ASSERT(thread_edges_by_node.size() == my_nodes_count);
+    BOOST_ASSERT(out_thread_distances.size() == my_nodes_count);
+    BOOST_ASSERT(out_thread_predecessors.size() == my_nodes_count);
 
-    const size_t my_node_count = threads.for_each_count(thread_rank, m_node_count);
-    carray<double> distances(my_node_count, INFINITY);
-    carray<size_t> predecessors(my_node_count, -1);
-    carray<state> states(my_node_count, state::unexplored);
+    array_slice<double> distances = out_thread_distances;
+    array_slice<size_t> predecessors = out_thread_predecessors;
+    carray<state> states(my_nodes_count, state::unexplored);
 
     auto cmp_distance = [&](size_t a, size_t b) { return distances[a] > distances[b]; };
     using distance_queue_t =
         fibonacci_heap<size_t, compare<decltype(cmp_distance)>, allocator<thread_local_allocator<size_t>>>;
-    carray<distance_queue_t::handle_type> distance_queue_handles(my_node_count);
+    carray<distance_queue_t::handle_type> distance_queue_handles(my_nodes_count);
+    distance_queue_t distance_queue(cmp_distance);
 
 #if defined(CRAUSER) || defined(CRAUSERDYN)
     // Queue for the IN criteria
-    carray<double> min_incoming(my_node_count);
+    carray<double> min_incoming(my_nodes_count);
     auto cmp_crauser_in = [&](size_t a, size_t b) {
         return distances[a] - min_incoming[a] > distances[b] - min_incoming[b];
     };
     using crauser_in_queue_t =
         fibonacci_heap<size_t, compare<decltype(cmp_crauser_in)>, allocator<thread_local_allocator<size_t>>>;
-    carray<crauser_in_queue_t::handle_type> crauser_in_queue_handles(my_node_count);
+    carray<crauser_in_queue_t::handle_type> crauser_in_queue_handles(my_nodes_count);
+    crauser_in_queue_t crauser_in_queue(cmp_crauser_in);
 
     // Queue for the OUT criteria
 #if defined(CRAUSER)
-    carray<double> min_outgoing(my_node_count, INFINITY);
+    carray<double> min_outgoing(my_nodes_count, INFINITY);
     auto min_outgoing_value = [&](size_t n) { return min_outgoing[n]; };
 #elif defined(CRAUSERDYN)
-    carray<edge> min_outgoing(my_node_count, edge(-1, -1, INFINITY));
-    auto min_outgoing_value = [&](size_t n) -> double { return min_outgoing[n].cost; };
+    carray<edge> min_outgoing(my_nodes_count, edge(-1, -1, INFINITY));
+    auto min_outgoing_value = [&](size_t n) { return min_outgoing[n].cost; };
 #endif
     auto cmp_crauser_out = [&](size_t a, size_t b) {
         return distances[a] + min_outgoing_value(a) > distances[b] + min_outgoing_value(b);
     };
     using crauser_out_queue_t =
         fibonacci_heap<size_t, compare<decltype(cmp_crauser_out)>, allocator<thread_local_allocator<size_t>>>;
-    carray<crauser_out_queue_t::handle_type> crauser_out_queue_handles(my_node_count);
-#endif
-
-    threads.single_collective(
-        [&] { m_relaxations = carray<tbb::concurrent_vector<relaxation>>(threads.thread_count()); });
-    tbb::concurrent_vector<relaxation>& my_relaxations = m_relaxations[thread_rank];
-
-    const auto start_time = std::chrono::steady_clock::now();
-
-#if defined(CRAUSER) || defined(CRAUSERDYN)
-    threads.for_each_with_index_collective(thread_rank, edges, [&](size_t n, array_slice<const edge> node) {
-        for (const edge& edge : node) {
-            atomic_min(m_min_incoming[edge.destination], edge.cost);
-#if defined(CRAUSER)
-            if (edge.cost < min_outgoing[n / threads.thread_count()]) {
-                min_outgoing[n / threads.thread_count()] = edge.cost;
-            }
-#elif defined(CRAUSERDYN)
-            if (edge.cost < min_outgoing[n / threads.thread_count()].cost) {
-                min_outgoing[n / threads.thread_count()] = edge;
-            }
-#endif
-        }
-    });
-    for (size_t i = 0; i < my_node_count; ++i) {
-        min_incoming[i] = m_min_incoming[i * threads.thread_count() + thread_rank].load(std::memory_order_relaxed);
-    }
-#endif
-
-    const auto after_init_time = std::chrono::steady_clock::now();
-
-    distance_queue_t distance_queue(cmp_distance);
-#if defined(CRAUSER) || defined(CRAUSERDYN)
-    crauser_in_queue_t crauser_in_queue(cmp_crauser_in);
+    carray<crauser_out_queue_t::handle_type> crauser_out_queue_handles(my_nodes_count);
     crauser_out_queue_t crauser_out_queue(cmp_crauser_out);
 #endif
 
+    // Shared data
+    threads.single_collective([&] {
+        m_seen_distances = carray<std::atomic<double>>(node_count);
+        m_relaxations = carray<tbb::concurrent_vector<relaxation>>(threads.thread_count());
+#if defined(CRAUSER) || defined(CRAUSERDYN)
+        m_min_incoming = carray<std::atomic<double>>(node_count);
+#endif
+    });
+
+    for (size_t n = my_nodes_start; n < my_nodes_end; ++n) {
+        m_seen_distances[n].store(INFINITY, std::memory_order_relaxed);
+#if defined(CRAUSER) || defined(CRAUSERDYN)
+        m_min_incoming[n].store(INFINITY, std::memory_order_relaxed);
+#endif
+    }
+    threads.barrier_collective();
+
+#if defined(CRAUSER) || defined(CRAUSERDYN)
+    for (size_t n = 0; n < my_nodes_count; ++n) {
+        for (const edge& edge : thread_edges_by_node[n]) {
+            atomic_min(m_min_incoming[edge.destination], edge.cost);
+#if defined(CRAUSER)
+            if (edge.cost < min_outgoing[n]) {
+                min_outgoing[n] = edge.cost;
+            }
+#elif defined(CRAUSERDYN)
+            if (edge.cost < min_outgoing[n].cost) {
+                min_outgoing[n] = edge;
+            }
+#endif
+        }
+    }
+    threads.barrier_collective();
+    for (size_t n = 0; n < my_nodes_count; ++n) {
+        min_incoming[n] = m_min_incoming[n + my_nodes_start].load(std::memory_order_relaxed);
+    }
+#endif
+
+    tbb::concurrent_vector<relaxation>& my_relaxations = m_relaxations[thread_rank];
+
+    // Helper to settle a single edge.
     auto settle_edge = [&](size_t node, size_t predecessor_id, double distance) {
         if (states[node] != state::settled && distance < distances[node]) {
             distances[node] = distance;
@@ -120,6 +125,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         }
     };
 
+    // Helpter to relax a node either locally or remote.
     auto relax_node = [&](size_t node) {
         distance_queue.erase(distance_queue_handles[node]);
 #if defined(CRAUSER) || defined(CRAUSERDYN)
@@ -128,28 +134,28 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
         states[node] = state::settled;
 
-        const size_t node_id = node * threads.thread_count() + thread_rank;
-        m_seen_distances[node_id].store(0.0, std::memory_order_relaxed);
+        m_seen_distances[node + my_nodes_start].store(-INFINITY, std::memory_order_relaxed);
 
-        for (const edge& e : edges[node_id]) {
+        for (const edge& e : thread_edges_by_node[node]) {
             if (distances[node] + e.cost < m_seen_distances[e.destination].load(std::memory_order_relaxed)) {
                 m_seen_distances[e.destination].store(distances[node] + e.cost, std::memory_order_relaxed);
-                int dest_thread = e.destination % threads.thread_count();
+                int dest_thread = threads.chunk_thread_at(node_count, e.destination);
                 if (dest_thread == thread_rank) {
-                    settle_edge(e.destination / threads.thread_count(), node_id, distances[node] + e.cost);
+                    settle_edge(e.destination - my_nodes_start, node + my_nodes_start, distances[node] + e.cost);
                 } else {
-                    m_relaxations[dest_thread].push_back(relaxation{e.destination, node_id, distances[node] + e.cost});
+                    m_relaxations[dest_thread].push_back(
+                        relaxation{e.destination, node + my_nodes_start, distances[node] + e.cost});
                 }
             }
         }
     };
 
+    // Start node
     if (thread_rank == 0) {
         settle_edge(0, -1, 0.0);
     }
 
-    int phase;
-    for (phase = 0;; ++phase) {
+    for (int phase = 0;; ++phase) {
 #if defined(CRAUSER) || defined(CRAUSERDYN)
         threads.reduce_linear_collective(m_in_threshold,
                                          distance_queue.empty() ? INFINITY : distances[distance_queue.top()],
@@ -176,23 +182,23 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         threads.barrier_collective();
 
         for (const relaxation& r : my_relaxations) {
-            settle_edge(r.node / threads.thread_count(), r.predecessor, r.distance);
+            settle_edge(r.node - my_nodes_start, r.predecessor, r.distance);
         }
         my_relaxations.clear();
 
         threads.barrier_collective();
 
 #if defined(CRAUSERDYN)
-        for (size_t n = 0; n < my_node_count; ++n) {
+        for (size_t n = 0; n < my_nodes_count; ++n) {
             if (states[n] != state::settled && min_outgoing[n].cost != INFINITY) {
                 bool changed = false;
-                if (m_seen_distances[min_outgoing[n].destination].load(std::memory_order_relaxed) <= 0.0) {
+                if (m_seen_distances[min_outgoing[n].destination].load(std::memory_order_relaxed) < 0.0) {
                     changed = true;
                     edge result(-1, -1, INFINITY);
                     double min_cost = min_outgoing[n].cost;
-                    for (const auto& e : edges[n * threads.thread_count() + thread_rank]) {
+                    for (const edge& e : thread_edges_by_node[n]) {
                         if (e.cost < result.cost && e.cost >= min_cost &&
-                            m_seen_distances[e.destination].load(std::memory_order_relaxed) > 0.0) {
+                            m_seen_distances[e.destination].load(std::memory_order_relaxed) >= 0.0) {
                             result = e;
                         }
                     }
@@ -209,16 +215,4 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         threads.barrier_collective();
 #endif
     }
-
-    threads.for_each_with_index_collective(thread_rank, out_result, [&](size_t i, result& r) {
-        r.distance = distances[i / threads.thread_count()];
-        r.predecessor = predecessors[i / threads.thread_count()];
-    });
-
-    const auto end_time = std::chrono::steady_clock::now();
-    threads.reduce_linear_collective(
-        m_time, (end_time - start_time).count() / 1000000000.0, [](double a, double b) { return std::max(a, b); });
-    threads.reduce_linear_collective(m_init_time,
-                                     (after_init_time - start_time).count() / 1000000000.0,
-                                     [](double a, double b) { return std::max(a, b); });
 }

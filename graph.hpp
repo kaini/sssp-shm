@@ -11,11 +11,4 @@ struct edge {
     double cost = 0.0;
 };
 
-struct result {
-    result() {}
-    result(double distance, size_t predecessor) : distance(distance), predecessor(predecessor) {}
-    double distance = INFINITY;
-    size_t predecessor = -1;
-};
-
 } // namespace sssp

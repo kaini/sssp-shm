@@ -22,34 +22,22 @@ class thread_group {
         return (size / m_thread_count) + (thread_rank < size % m_thread_count ? 1 : 0);
     }
 
+    // Returns the thread id of the thread that is responsible for an index in an array according
+    // to chunk_start and chunk_size.
+    int chunk_thread_at(size_t size, size_t index) const {
+        size_t small_chunk_size = size / m_thread_count;
+        size_t large_chunks = size % m_thread_count;
+        if (index < (small_chunk_size + 1) * large_chunks) {
+            return static_cast<int>(index / (small_chunk_size + 1));
+        } else {
+            return static_cast<int>(large_chunks + (index - (small_chunk_size + 1) * large_chunks) / small_chunk_size);
+        }
+    }
+
     // A mutex around the function.
     template <typename F> void critical_section(F&& fun) {
         std::lock_guard<std::mutex> lock(m_critical_section_mutex);
         fun();
-    }
-
-    // Calls fun once on each element of the collection in parallel.
-    template <typename Collection, typename F>
-    void for_each_collective(int thread_rank, Collection& collection, F&& fun) {
-        const size_t size = collection.size();
-        for (size_t i = thread_rank; i < size; i += m_thread_count) {
-            fun(collection[i]);
-        }
-        barrier_collective();
-    }
-
-    // Calls fun once on each element of the collection in parallel.
-    template <typename Collection, typename F>
-    void for_each_with_index_collective(int thread_rank, Collection& collection, F&& fun) {
-        const size_t size = collection.size();
-        for (size_t i = thread_rank; i < size; i += m_thread_count) {
-            fun(i, collection[i]);
-        }
-        barrier_collective();
-    }
-
-    size_t for_each_count(int thread_rank, size_t count) const {
-        return count / m_thread_count + ((thread_rank < static_cast<int>(count % m_thread_count)) ? 1 : 0);
     }
 
     // Executes the function once in the group.
