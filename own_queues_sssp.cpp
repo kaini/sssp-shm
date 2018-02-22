@@ -30,6 +30,10 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     BOOST_ASSERT(out_thread_distances.size() == my_nodes_count);
     BOOST_ASSERT(out_thread_predecessors.size() == my_nodes_count);
 
+    double local_relax_time = 0.0;
+    double inbox_relax_time = 0.0;
+    double crauser_dyn_time = 0.0;
+
     array_slice<double> distances = out_thread_distances;
     array_slice<size_t> predecessors = out_thread_predecessors;
     carray<state> states(my_nodes_count, state::unexplored);
@@ -179,6 +183,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
 
     for (int phase = 0;; ++phase) {
+        auto local_relax_start = std::chrono::steady_clock::now();
 #if defined(CRAUSER) || defined(CRAUSERDYN)
         threads.reduce_linear_collective(m_in_threshold,
                                          double(INFINITY),
@@ -203,14 +208,23 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             relax_node(distance_queue.top());
         }
 #endif
+        auto local_relax_end = std::chrono::steady_clock::now();
+        local_relax_time += (local_relax_end - local_relax_start).count() / 1000000000.0;
 
         threads.barrier_collective();
+
+        auto inbox_relax_start = std::chrono::steady_clock::now();
 
         my_relaxations.for_each(
             [&](const relaxation& r) { settle_edge(r.node - my_nodes_start, r.predecessor, r.distance); });
         my_relaxations.clear();
 
+        auto inbox_relax_end = std::chrono::steady_clock::now();
+        inbox_relax_time += (inbox_relax_end - inbox_relax_start).count() / 1000000000.0;
+
         threads.barrier_collective();
+
+        auto crauser_dyn_start = std::chrono::steady_clock::now();
 
 #if defined(CRAUSERDYN)
         for (size_t n = 0; n < my_nodes_count; ++n) {
@@ -236,7 +250,17 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             }
         }
 
+        auto crauser_dyn_end = std::chrono::steady_clock::now();
+        crauser_dyn_time += (crauser_dyn_end - crauser_dyn_start).count() / 1000000000.0;
+
         threads.barrier_collective();
 #endif
     }
+
+    threads.reduce_linear_collective(
+        m_local_relax_time, 0.0, local_relax_time, [](double a, double b) { return std::max(a, b); });
+    threads.reduce_linear_collective(
+        m_inbox_relax_time, 0.0, inbox_relax_time, [](double a, double b) { return std::max(a, b); });
+    threads.reduce_linear_collective(
+        m_crauser_dyn_time, 0.0, crauser_dyn_time, [](double a, double b) { return std::max(a, b); });
 }

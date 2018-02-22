@@ -283,7 +283,11 @@ int main(int argc, char* argv[]) {
     }
 
     double par_time = *std::max_element(time_by_thread.begin(), time_by_thread.end());
-    std::cout << "Par time: " << par_time << " (incl. " << own_queues_sssp.init_time() << " init time)\n";
+    std::cout << "Par time: " << par_time << "\n";
+    std::cout << "\tInit time: " << own_queues_sssp.init_time() << "\n";
+    std::cout << "\tLocal relax time: " << own_queues_sssp.local_relax_time() << "\n";
+    std::cout << "\tInbox relax time: " << own_queues_sssp.inbox_relax_time() << "\n";
+    std::cout << "\tCrauser dyn. time: " << own_queues_sssp.crauser_dyn_time() << "\n";
 
     double seq_time = 0.0;
     bool valid = true;

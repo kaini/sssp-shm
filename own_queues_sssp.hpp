@@ -32,6 +32,9 @@ class own_queues_sssp {
                         array_slice<size_t> out_thread_predecessors);
 
     double init_time() const { return m_init_time.load(std::memory_order_relaxed); }
+    double local_relax_time() const { return m_local_relax_time.load(std::memory_order_relaxed); }
+    double inbox_relax_time() const { return m_inbox_relax_time.load(std::memory_order_relaxed); }
+    double crauser_dyn_time() const { return m_crauser_dyn_time.load(std::memory_order_relaxed); }
 
   private:
     struct relaxation {
@@ -51,6 +54,9 @@ class own_queues_sssp {
 #endif
 
     std::atomic<double> m_init_time;
+    std::atomic<double> m_local_relax_time;
+    std::atomic<double> m_inbox_relax_time;
+    std::atomic<double> m_crauser_dyn_time;
 };
 
 } // namespace sssp
