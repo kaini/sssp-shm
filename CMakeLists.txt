@@ -64,16 +64,20 @@ target_link_libraries (tbb
 function (add_variant NAME)
 	string (TOUPPER ${NAME} UPPER_NAME)
 	set (HEADERS
+		allreduce_sssp.hpp
 		array_slice.hpp
 		buddy_allocator.hpp
 		carray.hpp
 		collective_functions.hpp
+		dijkstra.hpp
 		graph.hpp
 		own_queues_sssp.hpp
 		thread_local_allocator.hpp
 	)
 	set (SOURCES
+		allreduce_sssp.cpp
 		buddy_allocator.cpp
+		dijkstra.cpp
 		main.cpp
 		own_queues_sssp.cpp
 		thread_local_allocator.cpp

@@ -11,6 +11,18 @@ class thread_group {
 
     int thread_count() const { return m_thread_count; }
 
+    // Returns the start of the chunk for the given thread, such that no chunk
+    // of other threads overlap and all the full range is covered.
+    size_t chunk_start(int thread_rank, size_t size) const {
+        return thread_rank * (size / m_thread_count) + std::min(size_t(thread_rank), size % m_thread_count);
+    }
+
+    // Returns the length to accomodate the return value of chunk_start.
+    size_t chunk_size(int thread_rank, size_t size) const {
+        return (size / m_thread_count) + (thread_rank < size % m_thread_count ? 1 : 0);
+    }
+
+    // A mutex around the function.
     template <typename F> void critical_section(F&& fun) {
         std::lock_guard<std::mutex> lock(m_critical_section_mutex);
         fun();
@@ -50,8 +62,10 @@ class thread_group {
         barrier_collective();
     }
 
+    // Barrier.
     void barrier_collective() { m_barrier.wait(); }
 
+    // Linear reduction of a single atomic variable.
     template <typename T, typename F> void reduce_linear_collective(std::atomic<T>& into, const T& value, F&& reduce) {
         into.store(value, std::memory_order_relaxed);
         barrier_collective();

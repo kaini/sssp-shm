@@ -1,6 +1,7 @@
 #pragma once
 #include <boost/assert.hpp>
 #include <cstdlib>
+#include <type_traits>
 
 template <typename T> class array_slice {
   public:
@@ -16,6 +17,10 @@ template <typename T> class array_slice {
         BOOST_ASSERT(index < m_size);
         return m_ptr[index];
     }
+
+    template <typename As> array_slice<As> as() const { return array_slice<As>(m_ptr, m_size); }
+    array_slice<const T> as_const() const { return as<const T>(); }
+    operator array_slice<const T>() const { return as_const(); }
 
   private:
     T* m_ptr;
