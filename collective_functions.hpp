@@ -11,11 +11,11 @@ class thread_group {
     thread_group(int thread_count, hwloc_topology_t topo, hwloc_const_bitmap_t cpuset)
         : m_thread_count(thread_count), m_topo(topo), m_cpuset(cpuset), m_barrier(thread_count), m_single_do(false) {
         for (int t = 0; t < thread_count; ++t) {
-            m_thread_cpusets.push_back(thread_pu(t)->cpuset);
+            m_thread_cpusets.push_back(get_pu(t)->cpuset);
         }
     }
 
-    hwloc_obj_t thread_pu(int thread) { return hwloc_get_obj_by_type(m_topo, HWLOC_OBJ_PU, thread); }
+    hwloc_obj_t get_pu(int thread) { return hwloc_get_obj_by_type(m_topo, HWLOC_OBJ_PU, thread); }
 
     int thread_count() const { return m_thread_count; }
 

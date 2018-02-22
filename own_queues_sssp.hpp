@@ -21,6 +21,10 @@ class own_queues_sssp {
     // The algorithm does not initialize out_thread_distances or out_thread_predecessors.
     void run_collective(thread_group& threads,
                         int thread_rank,
+                        int group_count,
+                        int group_rank,
+                        thread_group& group_threads,
+                        int group_thread_rank,
                         size_t node_count,
                         size_t edge_count,
                         array_slice<const array_slice<const edge>> thread_edges_by_node,
@@ -36,7 +40,7 @@ class own_queues_sssp {
 
     size_t m_node_count;
     carray<relaxed_vector<relaxation>> m_relaxations;
-    thread_group::unique_ptr m_seen_distances;
+    carray<carray<std::atomic<double>>> m_seen_distances; // by group
 
 #if defined(CRAUSER) || defined(CRAUSERDYN)
     carray<std::atomic<double>> m_min_incoming;

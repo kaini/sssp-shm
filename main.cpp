@@ -115,18 +115,20 @@ static void generate_edges_collective(thread_group& threads,
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "args ...\n";
+    if (argc < 3) {
+        std::cerr << "thread_count group_layer\n";
         return EXIT_FAILURE;
     }
     const int thread_count = atoi(argv[1]);
+    int group_layer = atoi(argv[2]);
 
     hwloc_topology_t topo;
     hwloc_topology_init(&topo);
     hwloc_topology_load(topo);
 
-    std::cerr << "Topology: (assuming symmetric topology; * marks NUMA nodes)\n";
+    std::cerr << "Topology: (assuming symmetric topology)\n";
     int topo_depth = hwloc_topology_get_depth(topo);
+    group_layer = std::max(0, std::min(topo_depth - 1, group_layer));
     struct topo_layer {
         int count = 0;
         std::string name = "";
@@ -139,11 +141,14 @@ int main(int argc, char* argv[]) {
             effective_topo.back().count = depth_count;
         }
         if (!effective_topo.back().name.empty()) {
-            effective_topo.back().name += "+";
+            effective_topo.back().name += " + ";
         }
         effective_topo.back().name += hwloc_type_to_string(hwloc_get_depth_type(topo, d));
+        if (d == group_layer) {
+            effective_topo.back().name += "(grouping)";
+        }
         if (hwloc_get_next_obj_by_depth(topo, d, nullptr)->memory_arity > 0) {
-            effective_topo.back().name += "*";
+            effective_topo.back().name += "(numa node)";
         }
     }
     for (const auto& layer : effective_topo) {
@@ -186,10 +191,35 @@ int main(int argc, char* argv[]) {
     std::atomic<size_t> global_edge_count;
     own_queues_sssp own_queues_sssp;
 
+    // Split the threads into groups
+    struct group {
+        int size = 0;
+        int master = -1;
+        std::unique_ptr<::thread_group> thread_group;
+    };
+    carray<int> group_by_thread(thread_count);
+    carray<int> rank_in_group_by_thread(thread_count);
+    carray<group> groups(hwloc_get_nbobjs_by_depth(topo, group_layer));
+    for (int rank = 0; rank < thread_count; ++rank) {
+        hwloc_obj_t pu = threads.get_pu(rank);
+        hwloc_obj_t group_obj = hwloc_get_ancestor_obj_by_depth(topo, group_layer, pu);
+        if (!group_obj) {
+            std::cerr << "Found a thread that cannot be assigned to the given layer!\n";
+            return EXIT_FAILURE;
+        }
+        group_by_thread[rank] = static_cast<int>(group_obj->logical_index);
+        group& g = groups[group_obj->logical_index];
+        rank_in_group_by_thread[rank] = g.size;
+        g.size += 1;
+        if (g.master == -1) {
+            g.master = rank;
+        }
+    }
+
     for (int rank = 0; rank < thread_count; ++rank) {
         thread_handles.emplace_back(std::thread([&, rank] {
             // Pin the threads
-            hwloc_obj_t pu = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, rank);
+            hwloc_obj_t pu = threads.get_pu(rank);
             hwloc_obj_t core = hwloc_get_ancestor_obj_by_type(topo, HWLOC_OBJ_CORE, pu);
             if (!core) {
                 core = pu;
@@ -219,13 +249,31 @@ int main(int argc, char* argv[]) {
             threads.single_collective(
                 [&] { std::cout << "Gen time: " << gen_time.load(std::memory_order_relaxed) << "\n"; });
 
+            // Form the thread groups
+            int group_rank = group_by_thread[rank];
+            if (groups[group_rank].master == rank) {
+                groups[group_rank].thread_group.reset(new thread_group(
+                    groups[group_rank].size, topo, hwloc_get_obj_by_depth(topo, group_layer, group_rank)->cpuset));
+            }
+            threads.barrier_collective();
+
             // Time & run the algorithm
             threads.barrier_collective();
             auto start = std::chrono::steady_clock::now();
             carray<array_slice<const edge>>& edges = edges_by_thread_by_node[rank];
             carray<double>& distances = distances_by_thread[rank] = carray<double>(edges.size(), INFINITY);
             carray<size_t>& predecessors = predecessors_by_thread[rank] = carray<size_t>(edges.size(), -1);
-            own_queues_sssp.run_collective(threads, rank, node_count, edge_count, edges, distances, predecessors);
+            own_queues_sssp.run_collective(threads,
+                                           rank,
+                                           static_cast<int>(groups.size()),
+                                           group_rank,
+                                           *groups[group_rank].thread_group,
+                                           rank_in_group_by_thread[rank],
+                                           node_count,
+                                           edge_count,
+                                           edges,
+                                           distances,
+                                           predecessors);
             auto end = std::chrono::steady_clock::now();
             time_by_thread[rank] = (end - start).count() / 1000000000.0;
         }));
