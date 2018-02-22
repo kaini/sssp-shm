@@ -34,10 +34,7 @@ class own_queues_sssp {
 
     size_t m_node_count;
     carray<tbb::concurrent_vector<relaxation>> m_relaxations;
-    carray<std::atomic<double>> m_seen_distances;
-
-    std::atomic<double> m_time;
-    std::atomic<double> m_init_time;
+    thread_group::interleaved_unique_ptr m_seen_distances;
 
 #if defined(CRAUSER) || defined(CRAUSERDYN)
     carray<std::atomic<double>> m_min_incoming;

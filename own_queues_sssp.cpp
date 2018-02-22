@@ -65,15 +65,17 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
     // Shared data
     threads.single_collective([&] {
-        m_seen_distances = carray<std::atomic<double>>(node_count);
+        m_seen_distances = threads.alloc_interleaved(sizeof(std::atomic<double>) * node_count);
         m_relaxations = carray<tbb::concurrent_vector<relaxation>>(threads.thread_count());
 #if defined(CRAUSER) || defined(CRAUSERDYN)
         m_min_incoming = carray<std::atomic<double>>(node_count);
 #endif
     });
+    std::atomic<double>* global_seen_distances = static_cast<std::atomic<double>*>(m_seen_distances.get());
 
     for (size_t n = my_nodes_start; n < my_nodes_end; ++n) {
-        m_seen_distances[n].store(INFINITY, std::memory_order_relaxed);
+        new (&global_seen_distances[n]) std::atomic<double>(INFINITY);
+        static_assert(std::is_trivially_destructible<std::atomic<double>>::value, "");
 #if defined(CRAUSER) || defined(CRAUSERDYN)
         m_min_incoming[n].store(INFINITY, std::memory_order_relaxed);
 #endif
@@ -134,11 +136,11 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
         states[node] = state::settled;
 
-        m_seen_distances[node + my_nodes_start].store(-INFINITY, std::memory_order_relaxed);
+        global_seen_distances[node + my_nodes_start].store(-INFINITY, std::memory_order_relaxed);
 
         for (const edge& e : thread_edges_by_node[node]) {
-            if (distances[node] + e.cost < m_seen_distances[e.destination].load(std::memory_order_relaxed)) {
-                m_seen_distances[e.destination].store(distances[node] + e.cost, std::memory_order_relaxed);
+            if (distances[node] + e.cost < global_seen_distances[e.destination].load(std::memory_order_relaxed)) {
+                global_seen_distances[e.destination].store(distances[node] + e.cost, std::memory_order_relaxed);
                 int dest_thread = threads.chunk_thread_at(node_count, e.destination);
                 if (dest_thread == thread_rank) {
                     settle_edge(e.destination - my_nodes_start, node + my_nodes_start, distances[node] + e.cost);
@@ -192,13 +194,13 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         for (size_t n = 0; n < my_nodes_count; ++n) {
             if (states[n] != state::settled && min_outgoing[n].cost != INFINITY) {
                 bool changed = false;
-                if (m_seen_distances[min_outgoing[n].destination].load(std::memory_order_relaxed) < 0.0) {
+                if (global_seen_distances[min_outgoing[n].destination].load(std::memory_order_relaxed) < 0.0) {
                     changed = true;
                     edge result(-1, -1, INFINITY);
                     double min_cost = min_outgoing[n].cost;
                     for (const edge& e : thread_edges_by_node[n]) {
                         if (e.cost < result.cost && e.cost >= min_cost &&
-                            m_seen_distances[e.destination].load(std::memory_order_relaxed) >= 0.0) {
+                            global_seen_distances[e.destination].load(std::memory_order_relaxed) >= 0.0) {
                             result = e;
                         }
                     }

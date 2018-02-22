@@ -36,11 +36,25 @@ class thread_group {
         }
     }
 
-    auto alloc_interleaved(size_t bytes) {
-        auto deleter = [&, bytes](void* ptr) { hwloc_free(m_topo, ptr, bytes); };
-        std::unique_ptr<void, decltype(deleter)> ptr(
-            hwloc_alloc_membind(m_topo, bytes, m_cpuset, HWLOC_MEMBIND_INTERLEAVE, 0), deleter);
-        return ptr;
+    class hwloc_deleter {
+      public:
+        hwloc_deleter(hwloc_topology_t topo = 0, size_t size = 0) : m_topo(topo), m_size(size) {}
+        void operator()(void* ptr) const {
+            if (ptr) {
+                hwloc_free(m_topo, ptr, m_size);
+            }
+        }
+
+      private:
+        hwloc_topology_t m_topo;
+        size_t m_size;
+    };
+
+    using interleaved_unique_ptr = std::unique_ptr<void, hwloc_deleter>;
+
+    interleaved_unique_ptr alloc_interleaved(size_t bytes) {
+        return interleaved_unique_ptr(hwloc_alloc_membind(m_topo, bytes, m_cpuset, HWLOC_MEMBIND_INTERLEAVE, 0),
+                                      hwloc_deleter(m_topo, bytes));
     }
 
     // A mutex around the function.
