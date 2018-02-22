@@ -150,8 +150,8 @@ int main(int argc, char* argv[]) {
         std::cerr << std::setw(4) << layer.count << "x " << layer.name << "\n";
     }
 
-    hwloc_obj_t pu = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, 0);
-    if (hwloc_set_cpubind(topo, pu->cpuset, HWLOC_CPUBIND_THREAD) == -1) {
+    hwloc_obj_t master_pu = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, 0);
+    if (hwloc_set_cpubind(topo, master_pu->cpuset, HWLOC_CPUBIND_THREAD) == -1) {
         std::cerr << "Could not bind master thread, ignoring ...\n";
     }
 
@@ -161,8 +161,22 @@ int main(int argc, char* argv[]) {
     const bool validate = true;
     std::cout << "Thread count: " << thread_count << "\n";
 
+    hwloc_bitmap_t all_threads = hwloc_bitmap_alloc();
+    for (int t = 0; t < thread_count; ++t) {
+        hwloc_obj_t pu = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, t);
+        if (!pu) {
+            std::cerr << "Not enought PUs!\n";
+            return EXIT_FAILURE;
+        }
+        hwloc_obj_t core = hwloc_get_ancestor_obj_by_type(topo, HWLOC_OBJ_CORE, pu);
+        if (!core) {
+            core = pu;
+        }
+        hwloc_bitmap_or(all_threads, all_threads, core->cpuset);
+    }
+
     std::vector<std::thread> thread_handles;
-    thread_group threads(thread_count);
+    thread_group threads(thread_count, topo, all_threads);
     carray<carray<edge>> edges_by_thread(thread_count);
     carray<carray<array_slice<const edge>>> edges_by_thread_by_node(thread_count);
     carray<carray<double>> distances_by_thread(thread_count);
@@ -175,14 +189,11 @@ int main(int argc, char* argv[]) {
         thread_handles.emplace_back(std::thread([&, rank] {
             // Pin the threads
             hwloc_obj_t pu = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, rank);
-            if (!pu) {
-                throw std::runtime_error("Could not find enough PUs.");
-            }
             hwloc_obj_t core = hwloc_get_ancestor_obj_by_type(topo, HWLOC_OBJ_CORE, pu);
             if (!core) {
-                throw std::runtime_error("Found a PU without a core.");
+                core = pu;
             }
-            if (hwloc_set_cpubind(topo, core->cpuset, HWLOC_CPUBIND_THREAD | HWLOC_CPUBIND_STRICT) == -1) {
+            if (hwloc_set_cpubind(topo, core->cpuset, HWLOC_CPUBIND_THREAD) == -1) {
                 threads.critical_section([] { std::cerr << "Could not bind a thread, ignoring ...\n"; });
             }
 

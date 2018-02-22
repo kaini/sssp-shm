@@ -72,6 +72,7 @@ function (add_variant NAME)
 		dijkstra.hpp
 		graph.hpp
 		own_queues_sssp.hpp
+		relaxed_vector.hpp
 		thread_local_allocator.hpp
 	)
 	set (SOURCES

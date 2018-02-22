@@ -1,5 +1,6 @@
 #pragma once
 #include <boost/thread/barrier.hpp>
+#include <hwloc.h>
 #include <mutex>
 
 namespace sssp {
@@ -7,7 +8,8 @@ namespace sssp {
 // Shared (!) datastructre to handle a thread group.
 class thread_group {
   public:
-    thread_group(int thread_count) : m_thread_count(thread_count), m_barrier(thread_count), m_single_do(false) {}
+    thread_group(int thread_count, hwloc_topology_t topo, hwloc_const_bitmap_t cpuset)
+        : m_thread_count(thread_count), m_topo(topo), m_cpuset(cpuset), m_barrier(thread_count), m_single_do(false) {}
 
     int thread_count() const { return m_thread_count; }
 
@@ -32,6 +34,13 @@ class thread_group {
         } else {
             return static_cast<int>(large_chunks + (index - (small_chunk_size + 1) * large_chunks) / small_chunk_size);
         }
+    }
+
+    auto alloc_interleaved(size_t bytes) {
+        auto deleter = [&, bytes](void* ptr) { hwloc_free(m_topo, ptr, bytes); };
+        std::unique_ptr<void, decltype(deleter)> ptr(
+            hwloc_alloc_membind(m_topo, bytes, m_cpuset, HWLOC_MEMBIND_INTERLEAVE, 0), deleter);
+        return ptr;
     }
 
     // A mutex around the function.
@@ -69,6 +78,8 @@ class thread_group {
 
   private:
     int m_thread_count;
+    hwloc_topology_t m_topo;
+    hwloc_const_bitmap_t m_cpuset;
     boost::barrier m_barrier;
     std::atomic<bool> m_single_do;
     std::mutex m_critical_section_mutex;
