@@ -183,6 +183,7 @@ int main(int argc, char* argv[]) {
     carray<carray<size_t>> predecessors_by_thread(thread_count);
     carray<double> time_by_thread(thread_count, INFINITY);
     std::atomic<double> gen_time;
+    std::atomic<size_t> global_edge_count;
     own_queues_sssp own_queues_sssp;
 
     for (int rank = 0; rank < thread_count; ++rank) {
@@ -199,6 +200,7 @@ int main(int argc, char* argv[]) {
 
             // Generate the graph
             auto gen_start = std::chrono::steady_clock::now();
+
             generate_edges_collective(threads,
                                       rank,
                                       node_count,
@@ -206,9 +208,12 @@ int main(int argc, char* argv[]) {
                                       static_cast<unsigned int>(rank) * seed,
                                       edges_by_thread[rank],
                                       edges_by_thread_by_node[rank]);
+            threads.reduce_linear_collective(global_edge_count, size_t(0), edges_by_thread[rank].size(), std::plus<>());
+            size_t edge_count = global_edge_count.load(std::memory_order_relaxed);
 
             auto gen_end = std::chrono::steady_clock::now();
             threads.reduce_linear_collective(gen_time,
+                                             0.0,
                                              (gen_end - gen_start).count() / 1000000000.0,
                                              [](double a, double b) { return std::max(a, b); });
             threads.single_collective(
@@ -220,7 +225,7 @@ int main(int argc, char* argv[]) {
             carray<array_slice<const edge>>& edges = edges_by_thread_by_node[rank];
             carray<double>& distances = distances_by_thread[rank] = carray<double>(edges.size(), INFINITY);
             carray<size_t>& predecessors = predecessors_by_thread[rank] = carray<size_t>(edges.size(), -1);
-            own_queues_sssp.run_collective(threads, rank, node_count, edges, distances, predecessors);
+            own_queues_sssp.run_collective(threads, rank, node_count, edge_count, edges, distances, predecessors);
             auto end = std::chrono::steady_clock::now();
             time_by_thread[rank] = (end - start).count() / 1000000000.0;
         }));
@@ -236,10 +241,7 @@ int main(int argc, char* argv[]) {
     bool valid = true;
 
     if (validate) {
-        size_t edge_count = 0;
-        for (auto& edges : edges_by_thread) {
-            edge_count += edges.size();
-        }
+        size_t edge_count = global_edge_count.load(std::memory_order_relaxed);
         carray<edge> edges(edge_count);
         carray<array_slice<const edge>> edges_by_node(node_count);
         edge* edges_at = edges.begin();

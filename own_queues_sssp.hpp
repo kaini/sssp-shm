@@ -3,6 +3,7 @@
 #include "carray.hpp"
 #include "collective_functions.hpp"
 #include "graph.hpp"
+#include "relaxed_vector.hpp"
 #include "thread_local_allocator.hpp"
 #include <mutex>
 #include <tbb/concurrent_vector.h>
@@ -21,6 +22,7 @@ class own_queues_sssp {
     void run_collective(thread_group& threads,
                         int thread_rank,
                         size_t node_count,
+                        size_t edge_count,
                         array_slice<const array_slice<const edge>> thread_edges_by_node,
                         array_slice<double> out_thread_distances,
                         array_slice<size_t> out_thread_predecessors);
@@ -33,8 +35,8 @@ class own_queues_sssp {
     };
 
     size_t m_node_count;
-    carray<tbb::concurrent_vector<relaxation>> m_relaxations;
-    thread_group::interleaved_unique_ptr m_seen_distances;
+    carray<relaxed_vector<relaxation>> m_relaxations;
+    thread_group::unique_ptr m_seen_distances;
 
 #if defined(CRAUSER) || defined(CRAUSERDYN)
     carray<std::atomic<double>> m_min_incoming;

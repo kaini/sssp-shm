@@ -9,7 +9,13 @@ namespace sssp {
 class thread_group {
   public:
     thread_group(int thread_count, hwloc_topology_t topo, hwloc_const_bitmap_t cpuset)
-        : m_thread_count(thread_count), m_topo(topo), m_cpuset(cpuset), m_barrier(thread_count), m_single_do(false) {}
+        : m_thread_count(thread_count), m_topo(topo), m_cpuset(cpuset), m_barrier(thread_count), m_single_do(false) {
+        for (int t = 0; t < thread_count; ++t) {
+            m_thread_cpusets.push_back(thread_pu(t)->cpuset);
+        }
+    }
+
+    hwloc_obj_t thread_pu(int thread) { return hwloc_get_obj_by_type(m_topo, HWLOC_OBJ_PU, thread); }
 
     int thread_count() const { return m_thread_count; }
 
@@ -50,11 +56,16 @@ class thread_group {
         size_t m_size;
     };
 
-    using interleaved_unique_ptr = std::unique_ptr<void, hwloc_deleter>;
+    using unique_ptr = std::unique_ptr<void, hwloc_deleter>;
 
-    interleaved_unique_ptr alloc_interleaved(size_t bytes) {
-        return interleaved_unique_ptr(hwloc_alloc_membind(m_topo, bytes, m_cpuset, HWLOC_MEMBIND_INTERLEAVE, 0),
-                                      hwloc_deleter(m_topo, bytes));
+    unique_ptr alloc_interleaved(size_t bytes) {
+        return unique_ptr(hwloc_alloc_membind(m_topo, bytes, m_cpuset, HWLOC_MEMBIND_INTERLEAVE, 0),
+                          hwloc_deleter(m_topo, bytes));
+    }
+
+    unique_ptr alloc_for_rank(int destination_rank, size_t bytes) {
+        return unique_ptr(hwloc_alloc_membind(m_topo, bytes, m_thread_cpusets[destination_rank], HWLOC_MEMBIND_BIND, 0),
+                          hwloc_deleter(m_topo, bytes));
     }
 
     // A mutex around the function.
@@ -76,16 +87,17 @@ class thread_group {
     // Barrier.
     void barrier_collective() { m_barrier.wait(); }
 
-    // Linear reduction of a single atomic variable.
-    template <typename T, typename F> void reduce_linear_collective(std::atomic<T>& into, const T& value, F&& reduce) {
-        into.store(value, std::memory_order_relaxed);
+    // Linear reduction of a single atomic variable. start and reduce has to be the same on each thread.
+    template <typename T, typename F>
+    void reduce_linear_collective(std::atomic<T>& into, const T& start, const T& contribution, F&& reduce) {
+        into.store(start, std::memory_order_relaxed);
         barrier_collective();
         T current_value = into.load(std::memory_order_relaxed);
-        T wanted_value = reduce(value, current_value);
+        T wanted_value = reduce(contribution, current_value);
         while (wanted_value != current_value &&
                !into.compare_exchange_weak(
                    current_value, wanted_value, std::memory_order_relaxed, std::memory_order_relaxed)) {
-            wanted_value = reduce(value, current_value);
+            wanted_value = reduce(contribution, current_value);
         }
         barrier_collective();
     }
@@ -94,6 +106,7 @@ class thread_group {
     int m_thread_count;
     hwloc_topology_t m_topo;
     hwloc_const_bitmap_t m_cpuset;
+    std::vector<hwloc_const_bitmap_t> m_thread_cpusets;
     boost::barrier m_barrier;
     std::atomic<bool> m_single_do;
     std::mutex m_critical_section_mutex;

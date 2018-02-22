@@ -42,7 +42,8 @@ void sssp::allreduce_sssp::run_collective(thread_group& threads,
                 something_invalidated = true;
             }
         }
-        threads.reduce_linear_collective(m_continue, something_invalidated, [](bool a, bool b) { return a || b; });
+        threads.reduce_linear_collective(
+            m_continue, false, something_invalidated, [](bool a, bool b) { return a || b; });
         if (!m_continue.load(std::memory_order_relaxed)) {
             break;
         }

@@ -14,6 +14,7 @@ enum class state : unsigned char { unexplored, fringe, settled };
 void sssp::own_queues_sssp::run_collective(thread_group& threads,
                                            int thread_rank,
                                            size_t node_count,
+                                           size_t edge_count,
                                            array_slice<const array_slice<const edge>> thread_edges_by_node,
                                            array_slice<double> out_thread_distances,
                                            array_slice<size_t> out_thread_predecessors) {
@@ -66,12 +67,16 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     // Shared data
     threads.single_collective([&] {
         m_seen_distances = threads.alloc_interleaved(sizeof(std::atomic<double>) * node_count);
-        m_relaxations = carray<tbb::concurrent_vector<relaxation>>(threads.thread_count());
+        m_relaxations = carray<relaxed_vector<relaxation>>(threads.thread_count());
 #if defined(CRAUSER) || defined(CRAUSERDYN)
         m_min_incoming = carray<std::atomic<double>>(node_count);
 #endif
     });
+
     std::atomic<double>* global_seen_distances = static_cast<std::atomic<double>*>(m_seen_distances.get());
+
+    relaxed_vector<relaxation>& my_relaxations = m_relaxations[thread_rank];
+    my_relaxations.init(threads, thread_rank, edge_count);
 
     for (size_t n = my_nodes_start; n < my_nodes_end; ++n) {
         new (&global_seen_distances[n]) std::atomic<double>(INFINITY);
@@ -102,8 +107,6 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         min_incoming[n] = m_min_incoming[n + my_nodes_start].load(std::memory_order_relaxed);
     }
 #endif
-
-    tbb::concurrent_vector<relaxation>& my_relaxations = m_relaxations[thread_rank];
 
     // Helper to settle a single edge.
     auto settle_edge = [&](size_t node, size_t predecessor_id, double distance) {
@@ -160,10 +163,12 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     for (int phase = 0;; ++phase) {
 #if defined(CRAUSER) || defined(CRAUSERDYN)
         threads.reduce_linear_collective(m_in_threshold,
+                                         double(INFINITY),
                                          distance_queue.empty() ? INFINITY : distances[distance_queue.top()],
                                          [](auto a, auto b) { return std::min(a, b); });
         const double in_threshold = m_in_threshold.load(std::memory_order_relaxed);
         threads.reduce_linear_collective(m_out_threshold,
+                                         double(INFINITY),
                                          crauser_out_queue.empty() ? INFINITY
                                                                    : distances[crauser_out_queue.top()] +
                                                                          min_outgoing_value(crauser_out_queue.top()),
@@ -183,9 +188,8 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
         threads.barrier_collective();
 
-        for (const relaxation& r : my_relaxations) {
-            settle_edge(r.node - my_nodes_start, r.predecessor, r.distance);
-        }
+        my_relaxations.for_each(
+            [&](const relaxation& r) { settle_edge(r.node - my_nodes_start, r.predecessor, r.distance); });
         my_relaxations.clear();
 
         threads.barrier_collective();
