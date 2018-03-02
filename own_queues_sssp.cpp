@@ -45,8 +45,9 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #if defined(CRAUSER) || defined(CRAUSERDYN)
     // Queue for the IN criteria
     carray<double> min_incoming(my_nodes_count);
+    auto min_incoming_value = [&](size_t n) { return min_incoming[n]; };
     auto cmp_crauser_in = [&](size_t a, size_t b) {
-        return distances[a] - min_incoming[a] > distances[b] - min_incoming[b];
+        return distances[a] - min_incoming_value(a) > distances[b] - min_incoming_value(b);
     };
 
     // Queue for the OUT criteria
@@ -54,7 +55,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     carray<double> min_outgoing(my_nodes_count, INFINITY);
     auto min_outgoing_value = [&](size_t n) { return min_outgoing[n]; };
 #elif defined(CRAUSERDYN)
-    carray<edge> min_outgoing(my_nodes_count, edge(-1, -1, INFINITY));
+    carray<node_cost> min_outgoing(my_nodes_count, node_cost{size_t(-1), INFINITY});
     auto min_outgoing_value = [&](size_t n) { return min_outgoing[n].cost; };
 #endif
     auto cmp_crauser_out = [&](size_t a, size_t b) {
@@ -93,7 +94,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             }
 #elif defined(CRAUSERDYN)
             if (edge.cost < min_outgoing[n].cost) {
-                min_outgoing[n] = edge;
+                min_outgoing[n] = node_cost{edge.destination, edge.cost};
             }
 #endif
         }
@@ -186,7 +187,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         for (size_t i = 0, end = fringe.size(); i < end; ++i) {
             size_t node = fringe[i];
             BOOST_ASSERT(states[node] == state::fringe);
-            if (distances[node] - min_incoming[node] <= in_threshold || distances[node] <= out_threshold) {
+            if (distances[node] - min_incoming_value(node) <= in_threshold || distances[node] <= out_threshold) {
                 relax_node(node);
             }
         }
@@ -216,13 +217,13 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
         for (size_t n = 0; n < my_nodes_count; ++n) {
             if (states[n] != state::settled && min_outgoing[n].cost != INFINITY) {
-                if (group_seen_distances[min_outgoing[n].destination].load(std::memory_order_relaxed) < 0.0) {
-                    edge result(-1, -1, INFINITY);
+                if (group_seen_distances[min_outgoing[n].node].load(std::memory_order_relaxed) < 0.0) {
+                    node_cost result{size_t(-1), INFINITY};
                     double min_cost = min_outgoing[n].cost;
                     for (const edge& e : thread_edges_by_node[n]) {
                         if (e.cost < result.cost && e.cost >= min_cost &&
                             group_seen_distances[e.destination].load(std::memory_order_relaxed) >= 0.0) {
-                            result = e;
+                            result = node_cost{e.destination, e.cost};
                         }
                     }
                     min_outgoing[n] = result;

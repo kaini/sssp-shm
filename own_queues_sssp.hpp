@@ -43,6 +43,11 @@ class own_queues_sssp {
         double distance;
     };
 
+    struct node_cost {
+        size_t node;
+        double cost;
+    };
+
     size_t m_node_count;
     carray<relaxed_vector<relaxation>> m_relaxations;
     carray<carray<std::atomic<double>>> m_seen_distances; // by group
