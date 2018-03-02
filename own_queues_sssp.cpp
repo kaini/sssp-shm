@@ -196,25 +196,24 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             std::remove_if(fringe.begin(), fringe.end(), [&](size_t node) { return states[node] != state::fringe; }),
             fringe.end());
 
-        auto local_relax_end = std::chrono::steady_clock::now();
-        local_relax_time += (local_relax_end - local_relax_start).count() / 1000000000.0;
-
         threads.barrier_collective();
 
+        auto local_relax_end = std::chrono::steady_clock::now();
+        local_relax_time += (local_relax_end - local_relax_start).count() / 1000000000.0;
         auto inbox_relax_start = std::chrono::steady_clock::now();
 
         my_relaxations.for_each(
             [&](const relaxation& r) { settle_edge(r.node - my_nodes_start, r.predecessor, r.distance); });
         my_relaxations.clear();
 
+        threads.barrier_collective();
+
         auto inbox_relax_end = std::chrono::steady_clock::now();
         inbox_relax_time += (inbox_relax_end - inbox_relax_start).count() / 1000000000.0;
 
-        threads.barrier_collective();
-
+#if defined(CRAUSERDYN)
         auto crauser_dyn_start = std::chrono::steady_clock::now();
 
-#if defined(CRAUSERDYN)
         for (size_t n = 0; n < my_nodes_count; ++n) {
             if (states[n] != state::settled && min_outgoing[n].cost != INFINITY) {
                 if (group_seen_distances[min_outgoing[n].destination].load(std::memory_order_relaxed) < 0.0) {
@@ -231,10 +230,10 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             }
         }
 
+        threads.barrier_collective();
+
         auto crauser_dyn_end = std::chrono::steady_clock::now();
         crauser_dyn_time += (crauser_dyn_end - crauser_dyn_start).count() / 1000000000.0;
-
-        threads.barrier_collective();
 #endif
     }
 
