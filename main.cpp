@@ -15,7 +15,6 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <omp.h>
 #include <random>
 #include <string>
 #include <thread>

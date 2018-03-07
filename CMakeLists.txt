@@ -44,25 +44,18 @@ find_library (HWLOC_LIBRARY hwloc)
 target_include_directories (hwloc SYSTEM INTERFACE ${HWLOC_INCLUDE_DIRECTORY})
 target_link_libraries (hwloc INTERFACE ${HWLOC_LIBRARY})
  
-add_library (tbb INTERFACE)
-find_path (Tbb_INCLUDE_DIR tbb/parallel_for.h)
-target_include_directories (tbb INTERFACE ${Tbb_INCLUDE_DIR})
-find_library (Tbb_LIBRARY tbb)
-find_library (Tbb_MALLOC_LIBRARY tbbmalloc_proxy)
-if (MSVC)
-	find_library (Tbb_Debug_LIBRARY tbb_debug)
+add_library (tbbmalloc INTERFACE)
+if (CMAKE_SYSTEM_NAME STREQUAL "SunOS")
+	# ignore this library
 else ()
-	set (Tbb_Debug_LIBRARY ${Tbb_LIBRARY})
+	find_library (Tbb_MALLOC_LIBRARY tbbmalloc_proxy)
+	target_link_libraries (tbbmalloc INTERFACE ${Tbb_MALLOC_LIBRARY})
 endif ()
-target_link_libraries (tbb
-	INTERFACE optimized ${Tbb_LIBRARY} ${Tbb_MALLOC_LIBRARY}
-	INTERFACE debug ${Tbb_Debug_LIBRARY} ${Tbb_MALLOC_LIBRARY}
-)
 
 # sssp-mpi executable
 #####################
-function (add_variant NAME)
-	string (TOUPPER ${NAME} UPPER_NAME)
+function (ADD_VARIANT)
+	cmake_parse_arguments (ADD_VARIANT "" "NAME" "DEFINES" ${ARGN})
 	set (HEADERS
 		allreduce_sssp.hpp
 		array_slice.hpp
@@ -83,10 +76,17 @@ function (add_variant NAME)
 		own_queues_sssp.cpp
 		thread_local_allocator.cpp
 	)
-	add_executable (sssp-shm-${NAME}${NUMASTR} ${HEADERS} ${SOURCES})
-	target_link_libraries (sssp-shm-${NAME}${NUMASTR} PRIVATE boost hwloc tbb)
-	target_compile_definitions (sssp-shm-${NAME}${NUMASTR} PRIVATE -D${UPPER_NAME})
+	add_executable (sssp-shm-${ADD_VARIANT_NAME} ${HEADERS} ${SOURCES})
+	target_link_libraries (sssp-shm-${ADD_VARIANT_NAME} PRIVATE boost hwloc tbbmalloc)
+	target_compile_definitions (sssp-shm-${ADD_VARIANT_NAME} PRIVATE ${ADD_VARIANT_DEFINES})
 endfunction ()
 
-add_variant (crauser)
-add_variant (crauserdyn)
+add_variant (NAME crauser-in DEFINES -DCRAUSER_IN)
+add_variant (NAME crauser-out DEFINES -DCRAUSER_OUT)
+add_variant (NAME crauser-indyn DEFINES -DCRAUSER_INDYN)
+add_variant (NAME crauser-outdyn DEFINES -DCRAUSER_OUTDYN)
+
+add_variant (NAME crauser-in-out DEFINES -DCRAUSER_IN -DCRAUSER_OUT)
+add_variant (NAME crauser-indyn-out DEFINES -DCRAUSER_INDYN -DCRAUSER_OUT)
+add_variant (NAME crauser-in-outdyn DEFINES -DCRAUSER_IN -DCRAUSER_OUTDYN)
+add_variant (NAME crauser-indyn-outdyn DEFINES -DCRAUSER_INDYN -DCRAUSER_OUTDYN)

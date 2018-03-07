@@ -6,7 +6,6 @@
 #include "relaxed_vector.hpp"
 #include "thread_local_allocator.hpp"
 #include <mutex>
-#include <tbb/concurrent_vector.h>
 #include <unordered_map>
 
 namespace sssp {
@@ -52,9 +51,18 @@ class own_queues_sssp {
     carray<relaxed_vector<relaxation>> m_relaxations;
     carray<carray<std::atomic<double>>> m_seen_distances; // by group
 
-#if defined(CRAUSER) || defined(CRAUSERDYN)
+#if defined(CRAUSER_IN)
     carray<std::atomic<double>> m_min_incoming;
     std::atomic<double> m_in_threshold;
+#endif
+
+#if defined(CRAUSER_INDYN)
+    carray<std::atomic<size_t>> m_incoming_at;
+    carray<array_slice<edge>> m_incoming_edges;
+    std::atomic<double> m_in_threshold;
+#endif
+
+#if defined(CRAUSER_OUT) || defined(CRAUSER_OUTDYN)
     std::atomic<double> m_out_threshold;
 #endif
 
