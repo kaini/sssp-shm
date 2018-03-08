@@ -1,7 +1,6 @@
 #include "by_edges_sssp.hpp"
 #include "thread_local_allocator.hpp"
 #include <boost/heap/fibonacci_heap.hpp>
-#include <boost/heap/pairing_heap.hpp>
 #include <chrono>
 #include <iostream>
 
@@ -44,7 +43,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
 
     auto cmp_distance = [&](size_t a, size_t b) { return distances[a] > distances[b]; };
     using distance_queue_t =
-        pairing_heap<size_t, compare<decltype(cmp_distance)>, allocator<thread_local_allocator<size_t>>>;
+        fibonacci_heap<size_t, compare<decltype(cmp_distance)>, allocator<thread_local_allocator<size_t>>>;
     distance_queue_t distance_queue(cmp_distance);
     carray<distance_queue_t::handle_type> distance_queue_handles(node_count);
 
@@ -62,7 +61,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
     };
 
     using crauser_out_queue_t =
-        pairing_heap<size_t, compare<decltype(cmp_crauser_out)>, allocator<thread_local_allocator<size_t>>>;
+        fibonacci_heap<size_t, compare<decltype(cmp_crauser_out)>, allocator<thread_local_allocator<size_t>>>;
     crauser_out_queue_t crauser_out_queue(cmp_crauser_out);
     carray<crauser_out_queue_t::handle_type> crauser_out_queue_handles(node_count);
 
@@ -103,7 +102,9 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
     predecessors[0] = -1;
     states[0] = state::fringe;
     distance_queue_handles[0] = distance_queue.push(0);
+#if defined(CRAUSER_OUT)
     crauser_out_queue_handles[0] = crauser_out_queue.push(0);
+#endif
     m_global_distances[0].store(0.0, std::memory_order_relaxed);
     threads.barrier_collective();
 
@@ -120,14 +121,13 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
             break;
         }
         const double out_threshold = distances[crauser_out_queue.top()] + min_outgoing_value(crauser_out_queue.top());
-#endif
-
         while (!distance_queue.empty() && distances[distance_queue.top()] <= out_threshold) {
             size_t node = distance_queue.top();
             todo.push_back(node);
             distance_queue.pop();
             crauser_out_queue.erase(crauser_out_queue_handles[node]);
         }
+#endif
 
         auto end = std::chrono::steady_clock::now();
         time += (end - start).count() / 1000000000.0;
@@ -142,10 +142,14 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
                     if (states[e.destination] != state::fringe) {
                         states[e.destination] = state::fringe;
                         distance_queue_handles[e.destination] = distance_queue.push(e.destination);
+#if defined(CRAUSER_OUT)
                         crauser_out_queue_handles[e.destination] = crauser_out_queue.push(e.destination);
+#endif
                     } else {
                         distance_queue.update(distance_queue_handles[e.destination]);
+#if defined(CRAUSER_OUT)
                         crauser_out_queue.update(crauser_out_queue_handles[e.destination]);
+#endif
                     }
                     if (last_updated[e.destination] != phase) {
                         last_updated[e.destination] = phase;
@@ -177,10 +181,14 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
                     if (states[node] != state::fringe) {
                         states[node] = state::fringe;
                         distance_queue_handles[node] = distance_queue.push(node);
+#if defined(CRAUSER_OUT)
                         crauser_out_queue_handles[node] = crauser_out_queue.push(node);
+#endif
                     } else {
                         distance_queue.update(distance_queue_handles[node]);
+#if defined(CRAUSER_OUT)
                         crauser_out_queue.update(crauser_out_queue_handles[node]);
+#endif
                     }
                 }
             }
