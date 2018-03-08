@@ -51,7 +51,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     auto cmp_distance = [&](size_t a, size_t b) { return distances[a] > distances[b]; };
 
 #if defined(CRAUSER_IN)
-    std::vector<double, thread_local_allocator<double>> min_incoming(my_nodes_count);
+    carray<double> min_incoming(my_nodes_count);
     auto min_incoming_value = [&](size_t n) { return min_incoming[n]; };
     auto cmp_crauser_in = [&](size_t a, size_t b) {
         return distances[a] - min_incoming_value(a) > distances[b] - min_incoming_value(b);
@@ -59,8 +59,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
 #if defined(CRAUSER_INDYN)
-    std::vector<node_cost, thread_local_allocator<node_cost>> min_incoming(my_nodes_count,
-                                                                           node_cost{size_t(-1), INFINITY});
+    carray<node_cost> min_incoming(my_nodes_count, node_cost{size_t(-1), INFINITY});
     auto min_incoming_value = [&](size_t n) { return min_incoming[n].cost; };
     auto cmp_crauser_in = [&](size_t a, size_t b) {
         return distances[a] - min_incoming_value(a) > distances[b] - min_incoming_value(b);
@@ -68,7 +67,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
 #if defined(CRAUSER_OUT)
-    std::vector<double, thread_local_allocator<double>> min_outgoing(my_nodes_count, INFINITY);
+    carray<double> min_outgoing(my_nodes_count, INFINITY);
     auto min_outgoing_value = [&](size_t n) { return min_outgoing[n]; };
     auto cmp_crauser_out = [&](size_t a, size_t b) {
         return distances[a] + min_outgoing_value(a) > distances[b] + min_outgoing_value(b);
@@ -76,8 +75,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
 #if defined(CRAUSER_OUTDYN)
-    std::vector<node_cost, thread_local_allocator<node_cost>> min_outgoing(my_nodes_count,
-                                                                           node_cost{size_t(-1), INFINITY});
+    carray<node_cost> min_outgoing(my_nodes_count, node_cost{size_t(-1), INFINITY});
     auto min_outgoing_value = [&](size_t n) { return min_outgoing[n].cost; };
     auto cmp_crauser_out = [&](size_t a, size_t b) {
         return distances[a] + min_outgoing_value(a) > distances[b] + min_outgoing_value(b);
@@ -111,7 +109,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     auto init_start = std::chrono::steady_clock::now();
 
 #if defined(CRAUSER_INDYN)
-    std::vector<size_t, thread_local_allocator<size_t>> edge_counts(threads.thread_count(), 0);
+    carray<size_t> edge_counts(threads.thread_count(), 0);
     for (size_t node = 0; node < my_nodes_count; ++node) {
         for (const edge& edge : thread_edges_by_node[node]) {
             edge_counts[threads.chunk_thread_at(node_count, edge.destination)] += 1;
@@ -122,8 +120,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
     threads.barrier_collective();
 
-    std::vector<edge, thread_local_allocator<edge>> thread_in_edges(
-        m_incoming_at[thread_rank].load(std::memory_order_relaxed));
+    carray<edge> thread_in_edges(m_incoming_at[thread_rank].load(std::memory_order_relaxed));
     m_incoming_at[thread_rank].store(0, std::memory_order_relaxed);
     m_incoming_edges[thread_rank] = array_slice<edge>(thread_in_edges.data(), thread_in_edges.size());
     threads.barrier_collective();
@@ -139,8 +136,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     std::sort(thread_in_edges.begin(), thread_in_edges.end(), [](const edge& a, const edge& b) {
         return a.destination < b.destination;
     });
-    std::vector<array_slice<const edge>, thread_local_allocator<array_slice<const edge>>> thread_in_edges_by_node(
-        my_nodes_count);
+    carray<array_slice<const edge>> thread_in_edges_by_node(my_nodes_count);
     for (size_t node = 0, at = 0; node < my_nodes_count; ++node) {
         size_t start = at;
         while (at < thread_in_edges.size() && thread_in_edges[at].destination == node + my_nodes_start) {

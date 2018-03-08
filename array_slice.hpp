@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <type_traits>
 
+namespace sssp {
+
 template <typename T> class array_slice {
   public:
     array_slice() : array_slice(nullptr, 0) {}
@@ -26,3 +28,5 @@ template <typename T> class array_slice {
     T* m_ptr;
     size_t m_size;
 };
+
+} // namespace sssp

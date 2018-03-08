@@ -59,6 +59,7 @@ function (ADD_VARIANT)
 	set (HEADERS
 		array_slice.hpp
 		buddy_allocator.hpp
+		by_edges_sssp.hpp
 		carray.hpp
 		collective_functions.hpp
 		dijkstra.hpp
@@ -69,25 +70,30 @@ function (ADD_VARIANT)
 	)
 	set (SOURCES
 		buddy_allocator.cpp
+		by_edges_sssp.cpp
 		dijkstra.cpp
 		main.cpp
 		own_queues_sssp.cpp
 		thread_local_allocator.cpp
 	)
-	add_executable (sssp-shm-${ADD_VARIANT_NAME} ${HEADERS} ${SOURCES})
+	if (MSVC)
+		set (NATVIS carray.natvis)
+	else ()
+		set (NATVIS)
+	endif ()
+	add_executable (sssp-shm-${ADD_VARIANT_NAME} ${HEADERS} ${SOURCES} ${NATVIS})
 	target_link_libraries (sssp-shm-${ADD_VARIANT_NAME} PRIVATE boost hwloc tbbmalloc)
 	target_compile_definitions (sssp-shm-${ADD_VARIANT_NAME} PRIVATE ${ADD_VARIANT_DEFINES})
 endfunction ()
 
-add_variant (NAME crauser-in DEFINES -DCRAUSER_IN)
-add_variant (NAME crauser-out DEFINES -DCRAUSER_OUT)
-add_variant (NAME crauser-indyn DEFINES -DCRAUSER_INDYN)
-add_variant (NAME crauser-outdyn DEFINES -DCRAUSER_OUTDYN)
+add_variant (NAME by-edges-crauser-out                DEFINES -DBY_EDGES -DCRAUSER_OUT)
 
-add_variant (NAME crauser-in-out DEFINES -DCRAUSER_IN -DCRAUSER_OUT)
-add_variant (NAME crauser-indyn-out DEFINES -DCRAUSER_INDYN -DCRAUSER_OUT)
-add_variant (NAME crauser-in-outdyn DEFINES -DCRAUSER_IN -DCRAUSER_OUTDYN)
-add_variant (NAME crauser-indyn-outdyn DEFINES -DCRAUSER_INDYN -DCRAUSER_OUTDYN)
+add_variant (NAME by-nodes-crauser-in                 DEFINES -DBY_NODES -DCRAUSER_IN)
+add_variant (NAME by-nodes-crauser-out                DEFINES -DBY_NODES -DCRAUSER_OUT)
+add_variant (NAME by-nodes-crauser-indyn              DEFINES -DBY_NODES -DCRAUSER_INDYN)
+add_variant (NAME by-nodes-crauser-outdyn             DEFINES -DBY_NODES -DCRAUSER_OUTDYN)
 
-add_variant (NAME crauser-in-out-traff DEFINES -DCRAUSER_IN -DCRAUSER_OUT -DTRAFF)
-add_variant (NAME crauser-indyn-outdyn-traff DEFINES -DCRAUSER_INDYN -DCRAUSER_OUTDYN -DTRAFF)
+add_variant (NAME by-nodes-crauser-in-out             DEFINES -DBY_NODES -DCRAUSER_IN -DCRAUSER_OUT)
+add_variant (NAME by-nodes-crauser-indyn-out          DEFINES -DBY_NODES -DCRAUSER_INDYN -DCRAUSER_OUT)
+add_variant (NAME by-nodes-crauser-in-outdyn          DEFINES -DBY_NODES -DCRAUSER_IN -DCRAUSER_OUTDYN)
+add_variant (NAME by-nodes-crauser-indyn-outdyn       DEFINES -DBY_NODES -DCRAUSER_INDYN -DCRAUSER_OUTDYN)
