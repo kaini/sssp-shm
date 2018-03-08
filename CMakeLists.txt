@@ -57,7 +57,6 @@ endif ()
 function (ADD_VARIANT)
 	cmake_parse_arguments (ADD_VARIANT "" "NAME" "DEFINES" ${ARGN})
 	set (HEADERS
-		allreduce_sssp.hpp
 		array_slice.hpp
 		buddy_allocator.hpp
 		carray.hpp
@@ -69,7 +68,6 @@ function (ADD_VARIANT)
 		thread_local_allocator.hpp
 	)
 	set (SOURCES
-		allreduce_sssp.cpp
 		buddy_allocator.cpp
 		dijkstra.cpp
 		main.cpp
@@ -90,3 +88,6 @@ add_variant (NAME crauser-in-out DEFINES -DCRAUSER_IN -DCRAUSER_OUT)
 add_variant (NAME crauser-indyn-out DEFINES -DCRAUSER_INDYN -DCRAUSER_OUT)
 add_variant (NAME crauser-in-outdyn DEFINES -DCRAUSER_IN -DCRAUSER_OUTDYN)
 add_variant (NAME crauser-indyn-outdyn DEFINES -DCRAUSER_INDYN -DCRAUSER_OUTDYN)
+
+add_variant (NAME crauser-in-out-traff DEFINES -DCRAUSER_IN -DCRAUSER_OUT -DTRAFF)
+add_variant (NAME crauser-indyn-outdyn-traff DEFINES -DCRAUSER_INDYN -DCRAUSER_OUTDYN -DTRAFF)
