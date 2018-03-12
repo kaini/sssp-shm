@@ -1,19 +1,20 @@
 #pragma once
 #include "array_slice.hpp"
-#include "carray.hpp"
 #include "collective_functions.hpp"
 #include "graph.hpp"
 #include "perf_counter.hpp"
+#include "relaxed_vector.hpp"
 #include <atomic>
 
-#if !defined(BY_EDGES)
-#error Do not define this file in !BY_EDGES builds
+#if !defined(DELTASTEPPING)
+#error Do not include this file in !DELTASTEPPING builds
 #endif
 
 namespace sssp {
 
-class by_edges_sssp {
+class delta_stepping {
   public:
+    delta_stepping(double delta) : m_delta(delta) {}
     void run_collective(thread_group& threads,
                         int thread_rank,
                         int group_count,
@@ -29,14 +30,20 @@ class by_edges_sssp {
     array_slice<const perf_counter> perf() const { return m_perf; }
 
   private:
-    carray<std::atomic<double>> m_global_distances;
-    carray<size_t> m_global_updated;
-    std::atomic<size_t> m_global_updated_at;
-    carray<perf_counter> m_perf;
+    struct request {
+        request() = default;
+        request(size_t node, double distance, size_t predecessor)
+            : node(node), distance(distance), predecessor(predecessor) {}
+        size_t node;
+        double distance;
+        size_t predecessor;
+    };
 
-#if defined(CRAUSER_OUT)
-    std::atomic<double> m_out_threshold;
-#endif
+    double m_delta;
+    std::atomic<bool> m_done;
+    std::atomic<bool> m_inner_done;
+    carray<relaxed_vector<request>> m_requests;
+    carray<perf_counter> m_perf;
 };
 
 } // namespace sssp

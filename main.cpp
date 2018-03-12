@@ -1,8 +1,6 @@
 #include "array_slice.hpp"
-#include "by_edges_sssp.hpp"
 #include "carray.hpp"
 #include "dijkstra.hpp"
-#include "own_queues_sssp.hpp"
 #include "thread_local_allocator.hpp"
 #include <atomic>
 #include <boost/heap/fibonacci_heap.hpp>
@@ -25,8 +23,18 @@
 #error hwloc>=2.0.0 is required
 #endif
 
-#if defined(BY_NODES) == defined(BY_EDGES)
-#error Define either BY_NODES or BY_EDGES
+#if (!defined(BY_NODES) && !defined(BY_EDGES) && !defined(DELTASTEPPING)) ||                                           \
+    (defined(BY_NODES) && defined(BY_EDGES)) || (defined(BY_NODES) && defined(DELTASTEPPING)) ||                       \
+    (defined(BY_EDGES) && defined(DELTASTEPPING))
+#error Define either BY_NODES or BY_EDGES or DELTASTEPPING
+#endif
+
+#if defined(BY_NODES)
+#include "own_queues_sssp.hpp"
+#elif defined(BY_EDGES)
+#include "by_edges_sssp.hpp"
+#elif defined(DELTASTEPPING)
+#include "delta_stepping.hpp"
 #endif
 
 using namespace sssp;
@@ -206,7 +214,7 @@ int main(int argc, char* argv[]) {
 
     const size_t node_count = 150000;
     const double edge_chance = 400.0 / node_count;
-    const unsigned int seed = 42;
+    const unsigned int seed = 55;
     const bool validate = true;
     std::cout << "Thread count: " << thread_count << "\n";
 
@@ -238,6 +246,8 @@ int main(int argc, char* argv[]) {
     own_queues_sssp algorithm;
 #elif defined(BY_EDGES)
     by_edges_sssp algorithm;
+#elif defined(DELTASTEPPING)
+    delta_stepping algorithm(0.1 / (edge_chance * node_count)); // delta = 1/d
 #endif
 
     // Split the threads into groups
@@ -280,7 +290,7 @@ int main(int argc, char* argv[]) {
             // Generate the graph
             auto gen_start = std::chrono::steady_clock::now();
 
-#if defined(BY_NODES)
+#if defined(BY_NODES) || defined(DELTASTEPPING)
             distribute_nodes_generate_uniform_collective(
                 threads, rank, node_count, edge_chance, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
 #elif defined(BY_EDGES)
@@ -333,10 +343,13 @@ int main(int argc, char* argv[]) {
 
     double par_time = *std::max_element(time_by_thread.begin(), time_by_thread.end());
     std::cout << "Par time: " << par_time << "\n";
-    // std::cout << "\tInit time: " << algorithm.init_time() << "\n";
-    // std::cout << "\tLocal relax time: " << algorithm.local_relax_time() << "\n";
-    // std::cout << "\tInbox relax time: " << algorithm.inbox_relax_time() << "\n";
-    // std::cout << "\tCrauser dyn. time: " << algorithm.crauser_dyn_time() << "\n";
+    std::cout << "Perf counters:\n";
+    for (int t = 0; t < thread_count; ++t) {
+        std::cout << "Thread " << t << "\n";
+        for (const auto& time : algorithm.perf()[t].times()) {
+            std::cout << "\t" << time.first << " = " << time.second << "\n";
+        }
+    }
 
     double seq_time = 0.0;
     bool valid = true;
@@ -375,7 +388,7 @@ int main(int argc, char* argv[]) {
         carray<bool> checked(node_count, false);
         for (size_t n = 0; n < node_count; ++n) {
             for (int t = 0; t < threads.thread_count(); ++t) {
-#if defined(BY_NODES)
+#if defined(BY_NODES) || defined(DELTASTEPPING)
                 if (t != threads.chunk_thread_at(node_count, n)) {
                     continue;
                 }

@@ -54,47 +54,87 @@ endif ()
 
 # sssp-mpi executable
 #####################
+set (HEADERS
+	array_slice.hpp
+	buddy_allocator.hpp
+	carray.hpp
+	collective_functions.hpp
+	dijkstra.hpp
+	graph.hpp
+	perf_counter.hpp
+	relaxed_vector.hpp
+	thread_local_allocator.hpp
+)
+set (SOURCES
+	buddy_allocator.cpp
+	dijkstra.cpp
+	perf_counter.cpp
+	thread_local_allocator.cpp
+)
+set (NATVIS carray.natvis)
+add_library (common STATIC ${HEADERS} ${SOURCES} ${NATVIS})
+target_link_libraries (common PUBLIC boost hwloc tbbmalloc)
+
 function (ADD_VARIANT)
-	cmake_parse_arguments (ADD_VARIANT "" "NAME" "DEFINES" ${ARGN})
-	set (HEADERS
-		array_slice.hpp
-		buddy_allocator.hpp
-		by_edges_sssp.hpp
-		carray.hpp
-		collective_functions.hpp
-		dijkstra.hpp
-		graph.hpp
-		own_queues_sssp.hpp
-		relaxed_vector.hpp
-		thread_local_allocator.hpp
-	)
-	set (SOURCES
-		buddy_allocator.cpp
-		by_edges_sssp.cpp
-		dijkstra.cpp
-		main.cpp
-		own_queues_sssp.cpp
-		thread_local_allocator.cpp
-	)
-	set (NATVIS carray.natvis)
-	add_executable (sssp-shm-${ADD_VARIANT_NAME} ${HEADERS} ${SOURCES} ${NATVIS})
-	target_link_libraries (sssp-shm-${ADD_VARIANT_NAME} PRIVATE boost hwloc tbbmalloc)
+	set (MULTIVALUE_ARGUMENTS DEFINES FILES)
+	cmake_parse_arguments (ADD_VARIANT "" "NAME" "${MULTIVALUE_ARGUMENTS}" ${ARGN})
+	add_executable (sssp-shm-${ADD_VARIANT_NAME} main.cpp ${ADD_VARIANT_FILES})
+	target_link_libraries (sssp-shm-${ADD_VARIANT_NAME} PRIVATE common)
 	target_compile_definitions (sssp-shm-${ADD_VARIANT_NAME} PRIVATE ${ADD_VARIANT_DEFINES})
 endfunction ()
 
 foreach (QUEUE array heap)
 	string (TOUPPER "${QUEUE}" DQUEUE)
 
+	add_variant (
+		NAME ${QUEUE}-by-nodes-crauser-in
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_IN
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
+	add_variant (
+		NAME ${QUEUE}-by-nodes-crauser-out
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_OUT
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
+	add_variant (
+		NAME ${QUEUE}-by-nodes-crauser-indyn
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_INDYN
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
+	add_variant (
+		NAME ${QUEUE}-by-nodes-crauser-outdyn
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_OUTDYN
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
 
-	add_variant (NAME ${QUEUE}-by-nodes-crauser-in                 DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_IN)
-	add_variant (NAME ${QUEUE}-by-nodes-crauser-out                DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_OUT)
-	add_variant (NAME ${QUEUE}-by-nodes-crauser-indyn              DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_INDYN)
-	add_variant (NAME ${QUEUE}-by-nodes-crauser-outdyn             DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_OUTDYN)
-
-	add_variant (NAME ${QUEUE}-by-nodes-crauser-in-out             DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_IN -DCRAUSER_OUT)
-	add_variant (NAME ${QUEUE}-by-nodes-crauser-indyn-out          DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_INDYN -DCRAUSER_OUT)
-	add_variant (NAME ${QUEUE}-by-nodes-crauser-in-outdyn          DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_IN -DCRAUSER_OUTDYN)
-	add_variant (NAME ${QUEUE}-by-nodes-crauser-indyn-outdyn       DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_INDYN -DCRAUSER_OUTDYN)
+	add_variant (
+		NAME ${QUEUE}-by-nodes-crauser-in-out
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_IN -DCRAUSER_OUT
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
+	add_variant (
+		NAME ${QUEUE}-by-nodes-crauser-indyn-out
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_INDYN -DCRAUSER_OUT
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
+	add_variant (
+		NAME ${QUEUE}-by-nodes-crauser-in-outdyn
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_IN -DCRAUSER_OUTDYN
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
+	add_variant (NAME ${QUEUE}-by-nodes-crauser-indyn-outdyn
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_INDYN -DCRAUSER_OUTDYN
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
 endforeach ()
 
-add_variant (NAME heap-by-edges-crauser-out                DEFINES -DQ_HEAP -DBY_EDGES -DCRAUSER_OUT)
+add_variant (
+	NAME heap-by-edges-crauser-out
+	DEFINES -DQ_HEAP -DBY_EDGES -DCRAUSER_OUT
+	FILES by_edges_sssp.hpp by_edges_sssp.cpp
+)
+add_variant (
+	NAME delta-stepping
+	DEFINES -DDELTASTEPPING
+	FILES delta_stepping.hpp delta_stepping.cpp
+)

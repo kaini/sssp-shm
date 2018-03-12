@@ -2,7 +2,6 @@
 #include "thread_local_allocator.hpp"
 #include <algorithm>
 #include <boost/heap/fibonacci_heap.hpp>
-#include <chrono>
 #include <iostream>
 #include <unordered_set>
 
@@ -35,7 +34,10 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
                                            array_slice<const array_slice<const edge>> thread_edges_by_node,
                                            array_slice<double> out_thread_distances,
                                            array_slice<size_t> out_thread_predecessors) {
+    perf_counter perf;
+
     // Local data
+    perf.first_timeblock("init");
     const size_t my_nodes_count = threads.chunk_size(thread_rank, node_count);
     const size_t my_nodes_start = threads.chunk_start(thread_rank, node_count);
     const size_t my_nodes_end = my_nodes_start + my_nodes_count;
@@ -132,8 +134,6 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
     threads.barrier_collective();
 
-    auto init_start = std::chrono::steady_clock::now();
-
 #if defined(CRAUSER_INDYN)
     carray<size_t> edge_counts(threads.thread_count(), 0);
     for (size_t node = 0; node < my_nodes_count; ++node) {
@@ -209,12 +209,6 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
 #endif
 
-    auto init_end = std::chrono::steady_clock::now();
-    threads.reduce_linear_collective(m_init_time,
-                                     0.0,
-                                     (init_end - init_start).count() / 1000000000.0,
-                                     [](double a, double b) { return std::max(a, b); });
-
     // Group shared data
     group_threads.single_collective([&] { m_seen_distances[group_rank] = carray<std::atomic<double>>(node_count); });
     carray<std::atomic<double>>& group_seen_distances = m_seen_distances[group_rank];
@@ -285,7 +279,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
 
     for (int phase = 0;; ++phase) {
-        auto local_relax_start = std::chrono::steady_clock::now();
+        perf.next_timeblock("thresholds");
 
 #if defined(CRAUSER_IN) || defined(CRAUSER_INDYN)
 #if defined(Q_ARRAY)
@@ -323,6 +317,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         }
 #endif
 
+        perf.next_timeblock("fill_todo");
         todo.clear();
 
 #if defined(Q_ARRAY)
@@ -370,28 +365,24 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 #endif
 
+        perf.next_timeblock("relax");
         for (size_t node : todo) {
             relax_node(node);
         }
 
+        perf.next_timeblock("relax_barrier");
         threads.barrier_collective();
 
-        auto local_relax_end = std::chrono::steady_clock::now();
-        local_relax_time += (local_relax_end - local_relax_start).count() / 1000000000.0;
-        auto inbox_relax_start = std::chrono::steady_clock::now();
-
+        perf.next_timeblock("relax_inbox");
         my_relaxations.for_each(
             [&](const relaxation& r) { settle_edge(r.node - my_nodes_start, r.predecessor, r.distance); });
         my_relaxations.clear();
 
+        perf.next_timeblock("relax_inbox_barrier");
         threads.barrier_collective();
 
-        auto inbox_relax_end = std::chrono::steady_clock::now();
-        inbox_relax_time += (inbox_relax_end - inbox_relax_start).count() / 1000000000.0;
-
 #if defined(CRAUSER_OUTDYN) || defined(CRAUSER_INDYN)
-        auto crauser_dyn_start = std::chrono::steady_clock::now();
-
+        perf.next_timeblock("update_dynamic");
         for (size_t n = 0; n < my_nodes_count; ++n) {
             if (states[n] != state::settled) {
 #if defined(CRAUSER_INDYN)
@@ -435,17 +426,12 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             }
         }
 
+        perf.next_timeblock("update_dynamic_barrier");
         threads.barrier_collective();
-
-        auto crauser_dyn_end = std::chrono::steady_clock::now();
-        crauser_dyn_time += (crauser_dyn_end - crauser_dyn_start).count() / 1000000000.0;
 #endif
     }
 
-    threads.reduce_linear_collective(
-        m_local_relax_time, 0.0, local_relax_time, [](double a, double b) { return std::max(a, b); });
-    threads.reduce_linear_collective(
-        m_inbox_relax_time, 0.0, inbox_relax_time, [](double a, double b) { return std::max(a, b); });
-    threads.reduce_linear_collective(
-        m_crauser_dyn_time, 0.0, crauser_dyn_time, [](double a, double b) { return std::max(a, b); });
+    perf.end_timeblock();
+    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); });
+    m_perf[thread_rank] = std::move(perf);
 }

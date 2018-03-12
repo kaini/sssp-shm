@@ -3,10 +3,15 @@
 #include "carray.hpp"
 #include "collective_functions.hpp"
 #include "graph.hpp"
+#include "perf_counter.hpp"
 #include "relaxed_vector.hpp"
 #include "thread_local_allocator.hpp"
 #include <mutex>
 #include <unordered_map>
+
+#if !defined(BY_NODES)
+#error Do not include this file in !BY_NODES builds
+#endif
 
 namespace sssp {
 
@@ -30,10 +35,7 @@ class own_queues_sssp {
                         array_slice<double> out_thread_distances,
                         array_slice<size_t> out_thread_predecessors);
 
-    double init_time() const { return m_init_time.load(std::memory_order_relaxed); }
-    double local_relax_time() const { return m_local_relax_time.load(std::memory_order_relaxed); }
-    double inbox_relax_time() const { return m_inbox_relax_time.load(std::memory_order_relaxed); }
-    double crauser_dyn_time() const { return m_crauser_dyn_time.load(std::memory_order_relaxed); }
+    array_slice<const perf_counter> perf() const { return m_perf; }
 
   private:
     struct relaxation {
@@ -50,6 +52,7 @@ class own_queues_sssp {
     size_t m_node_count;
     carray<relaxed_vector<relaxation>> m_relaxations;
     carray<carray<std::atomic<double>>> m_seen_distances; // by group
+    carray<perf_counter> m_perf;
 
 #if defined(CRAUSER_IN)
     carray<std::atomic<double>> m_min_incoming;

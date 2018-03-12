@@ -48,22 +48,27 @@ template <typename T> class relaxed_vector {
     }
 
     template <typename F> void for_each(F&& fun) {
-        size_t at = m_at.load(std::memory_order_relaxed);
+        const size_t end = m_at.load(std::memory_order_relaxed);
+        size_t at = 0;
+
         for (size_t chunk = 0; chunk < m_data.size(); ++chunk) {
             T* ptr = m_data[chunk].load(std::memory_order_relaxed);
-            if (ptr == nullptr) {
+            if (!ptr) {
                 break;
             }
-
-            size_t limit = chunk_size;
-            if (at < (chunk + 1) * chunk_size) {
-                limit = at - chunk * chunk_size;
+            for (size_t i = 0; i < chunk_size; ++i) {
+                if (at >= end) {
+                    break;
+                }
+                fun(ptr[i]);
+                at += 1;
             }
-
-            for (size_t position = 0; position < limit; ++position) {
-                fun(ptr[position]);
+            if (at >= end) {
+                break;
             }
         }
+
+        BOOST_ASSERT(at == end);
     }
 
     void clear() { m_at.store(0, std::memory_order_relaxed); }

@@ -1,7 +1,6 @@
 #include "by_edges_sssp.hpp"
 #include "thread_local_allocator.hpp"
 #include <boost/heap/fibonacci_heap.hpp>
-#include <chrono>
 #include <iostream>
 
 #if defined(CRAUSER_IN) && defined(CRAUSER_INDYN)
@@ -32,7 +31,9 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
     BOOST_ASSERT(node_count == thread_edges_by_node.size());
     BOOST_ASSERT(node_count == out_thread_distances.size());
     BOOST_ASSERT(node_count == out_thread_predecessors.size());
+    perf_counter perf;
 
+    perf.first_timeblock("init");
     double time = 0;
     auto distances = out_thread_distances;
     auto predecessors = out_thread_predecessors;
@@ -110,8 +111,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
 
     int phase;
     for (phase = 0;; ++phase) {
-        const auto start = std::chrono::steady_clock::now();
-
+        perf.next_timeblock("find_thresholds");
         m_global_updated_at.store(0, std::memory_order_relaxed);
         updated.clear();
         todo.clear();
@@ -121,6 +121,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
             break;
         }
         const double out_threshold = distances[crauser_out_queue.top()] + min_outgoing_value(crauser_out_queue.top());
+        perf.next_timeblock("fill_todo");
         while (!distance_queue.empty() && distances[distance_queue.top()] <= out_threshold) {
             size_t node = distance_queue.top();
             todo.push_back(node);
@@ -129,9 +130,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
         }
 #endif
 
-        auto end = std::chrono::steady_clock::now();
-        time += (end - start).count() / 1000000000.0;
-
+        perf.next_timeblock("relax");
         for (size_t node : todo) {
             BOOST_ASSERT(states[node] == state::fringe);
             states[node] = state::settled;
@@ -159,16 +158,20 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
             }
         }
 
+        perf.next_timeblock("relax_barrier");
         threads.barrier_collective();
 
+        perf.next_timeblock("announce_updated");
         for (size_t node : updated) {
             BOOST_ASSERT(states[node] == state::fringe);
             atomic_min(m_global_distances[node], distances[node]);
             m_global_updated[m_global_updated_at.fetch_add(1, std::memory_order_relaxed)] = node;
         }
 
+        perf.next_timeblock("announce_updated_barrier");
         threads.barrier_collective();
 
+        perf.next_timeblock("merge_updated");
         for (size_t i = 0, end = m_global_updated_at.load(std::memory_order_relaxed); i < end; ++i) {
             size_t node = m_global_updated[i];
             BOOST_ASSERT(states[node] != state::settled);
@@ -194,8 +197,11 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
             }
         }
 
+        perf.next_timeblock("merge_updated_barrier");
         threads.barrier_collective();
     }
 
-    threads.critical_section([&] { std::cout << time << std::endl; });
+    perf.end_timeblock();
+    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); });
+    m_perf[thread_rank] = std::move(perf);
 }
