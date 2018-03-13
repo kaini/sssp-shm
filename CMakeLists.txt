@@ -113,6 +113,11 @@ foreach (QUEUE array heap)
 		FILES own_queues_sssp.hpp own_queues_sssp.cpp
 	)
 	add_variant (
+		NAME ${QUEUE}-by-nodes-crauser-in-out-traff
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_IN -DCRAUSER_OUT -DTRAFF
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
+	add_variant (
 		NAME ${QUEUE}-by-nodes-crauser-indyn-out
 		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_INDYN -DCRAUSER_OUT
 		FILES own_queues_sssp.hpp own_queues_sssp.cpp
@@ -124,6 +129,10 @@ foreach (QUEUE array heap)
 	)
 	add_variant (NAME ${QUEUE}-by-nodes-crauser-indyn-outdyn
 		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_INDYN -DCRAUSER_OUTDYN
+		FILES own_queues_sssp.hpp own_queues_sssp.cpp
+	)
+	add_variant (NAME ${QUEUE}-by-nodes-crauser-indyn-outdyn-traff
+		DEFINES -DQ_${DQUEUE} -DBY_NODES -DCRAUSER_INDYN -DCRAUSER_OUTDYN -DTRAFF
 		FILES own_queues_sssp.hpp own_queues_sssp.cpp
 	)
 endforeach ()

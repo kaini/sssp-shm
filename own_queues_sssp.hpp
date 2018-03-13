@@ -69,10 +69,18 @@ class own_queues_sssp {
     std::atomic<double> m_out_threshold;
 #endif
 
-    std::atomic<double> m_init_time;
-    std::atomic<double> m_local_relax_time;
-    std::atomic<double> m_inbox_relax_time;
-    std::atomic<double> m_crauser_dyn_time;
+#if defined(TRAFF)
+    carray<std::atomic<size_t>> m_predecessors_in_fringe;
+#if !defined(CRAUSER_IN)
+    // Reuse CRAUSER_IN to know the minima of each incoming edge per node
+    carray<std::atomic<double>> m_min_incoming;
+#endif
+#if !defined(CRAUSER_INDYN)
+    // Reuse CRAUSER_INDYN to exchange incoming edges
+    carray<std::atomic<size_t>> m_incoming_at;
+    carray<array_slice<edge>> m_incoming_edges;
+#endif
+#endif
 };
 
 } // namespace sssp

@@ -41,13 +41,6 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     const size_t my_nodes_count = threads.chunk_size(thread_rank, node_count);
     const size_t my_nodes_start = threads.chunk_start(thread_rank, node_count);
     const size_t my_nodes_end = my_nodes_start + my_nodes_count;
-    BOOST_ASSERT(thread_edges_by_node.size() == my_nodes_count);
-    BOOST_ASSERT(out_thread_distances.size() == my_nodes_count);
-    BOOST_ASSERT(out_thread_predecessors.size() == my_nodes_count);
-
-    double local_relax_time = 0.0;
-    double inbox_relax_time = 0.0;
-    double crauser_dyn_time = 0.0;
 
     array_slice<double> distances = out_thread_distances;
     array_slice<size_t> predecessors = out_thread_predecessors;
@@ -110,16 +103,35 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     carray<crauser_out_queue_t::handle_type> crauser_out_queue_handles(my_nodes_count);
 #endif
 
+#if defined(TRAFF) && defined(Q_ARRAY)
+    carray<double> min_pred_pred(my_nodes_count, INFINITY);
+#endif
+
+#if defined(TRAFF) && defined(Q_HEAP)
+    std::vector<size_t, thread_local_allocator<size_t>> traff_candidates;
+    carray<double> min_pred_pred(my_nodes_count, INFINITY);
+    auto cmp_traff = [&](size_t a, size_t b) {
+        return distances[a] - min_pred_pred[a] > distances[b] - min_pred_pred[b];
+    };
+    using traff_queue_t =
+        fibonacci_heap<size_t, compare<decltype(cmp_traff)>, allocator<thread_local_allocator<size_t>>>;
+    traff_queue_t traff_queue(cmp_traff);
+    carray<traff_queue_t::handle_type> traff_queue_handles(my_nodes_count);
+#endif
+
     // Globally shared data
     threads.single_collective([&] {
         m_seen_distances = carray<carray<std::atomic<double>>>(group_count);
         m_relaxations = carray<relaxed_vector<relaxation>>(threads.thread_count());
-#if defined(CRAUSER_IN)
+#if defined(CRAUSER_IN) || defined(TRAFF)
         m_min_incoming = carray<std::atomic<double>>(node_count);
 #endif
-#if defined(CRAUSER_INDYN)
+#if defined(CRAUSER_INDYN) || defined(TRAFF)
         m_incoming_at = carray<std::atomic<size_t>>(threads.thread_count());
         m_incoming_edges = carray<array_slice<edge>>(threads.thread_count());
+#endif
+#if defined(TRAFF)
+        m_predecessors_in_fringe = carray<std::atomic<size_t>>(node_count);
 #endif
     });
 
@@ -134,7 +146,8 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
     threads.barrier_collective();
 
-#if defined(CRAUSER_INDYN)
+    // Exchange incoming edges
+#if defined(CRAUSER_INDYN) || defined(TRAFF)
     carray<size_t> edge_counts(threads.thread_count(), 0);
     for (size_t node = 0; node < my_nodes_count; ++node) {
         for (const edge& edge : thread_edges_by_node[node]) {
@@ -172,7 +185,9 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             thread_in_edges_by_node[node] = array_slice<const edge>(&thread_in_edges[start], at - start);
         }
     }
+#endif
 
+#if defined(CRAUSER_INDYN)
     for (size_t n = 0; n < my_nodes_count; ++n) {
         for (const edge& edge : thread_in_edges_by_node[n]) {
             if (edge.cost < min_incoming[n].cost) {
@@ -182,10 +197,10 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
 #endif
 
-#if defined(CRAUSER_IN) || defined(CRAUSER_OUT) || defined(CRAUSER_OUTDYN)
+#if defined(CRAUSER_IN) || defined(CRAUSER_OUT) || defined(CRAUSER_OUTDYN) || defined(TRAFF)
     for (size_t n = 0; n < my_nodes_count; ++n) {
         for (const edge& edge : thread_edges_by_node[n]) {
-#if defined(CRAUSER_IN)
+#if defined(CRAUSER_IN) || defined(TRAFF)
             atomic_min(m_min_incoming[edge.destination], edge.cost);
 #endif
 #if defined(CRAUSER_OUT)
@@ -202,10 +217,26 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
 #endif
 
-#if defined(CRAUSER_IN)
+#if defined(CRAUSER_IN) || defined(TRAFF)
     threads.barrier_collective();
+#endif
+
+#if defined(CRAUSER_IN)
     for (size_t n = 0; n < my_nodes_count; ++n) {
         min_incoming[n] = m_min_incoming[n + my_nodes_start].load(std::memory_order_relaxed);
+    }
+#endif
+
+#if defined(TRAFF)
+    for (size_t n = 0; n < my_nodes_count; ++n) {
+        double min = INFINITY;
+        for (const auto& edge : thread_in_edges_by_node[n]) {
+            double value = edge.cost + m_min_incoming[n + my_nodes_start].load(std::memory_order_relaxed);
+            if (value < min) {
+                min = value;
+            }
+        }
+        min_pred_pred[n] = min;
     }
 #endif
 
@@ -225,6 +256,17 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         if (states[node] != state::settled && distance < distances[node]) {
             distances[node] = distance;
             predecessors[node] = predecessor_id;
+
+#if defined(TRAFF)
+            if (states[node] != state::fringe) {
+                for (const edge& edge : thread_edges_by_node[node]) {
+                    if (group_seen_distances[edge.destination].load(std::memory_order_relaxed) >= 0.0) {
+                        m_predecessors_in_fringe[edge.destination].fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
+#endif
+
 #if defined(Q_ARRAY)
             if (states[node] != state::fringe) {
                 states[node] = state::fringe;
@@ -240,6 +282,9 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #if defined(CRAUSER_OUT) || defined(CRAUSER_OUTDYN)
                 crauser_out_queue_handles[node] = crauser_out_queue.push(node);
 #endif
+#if defined(TRAFF)
+                traff_queue_handles[node] = traff_queue.push(node);
+#endif
             } else {
                 distance_queue.update(distance_queue_handles[node]);
 #if defined(CRAUSER_IN) || defined(CRAUSER_INDYN)
@@ -247,6 +292,9 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 #if defined(CRAUSER_OUT) || defined(CRAUSER_OUTDYN)
                 crauser_out_queue.update(crauser_out_queue_handles[node]);
+#endif
+#if defined(TRAFF)
+                traff_queue.update(traff_queue_handles[node]);
 #endif
             }
 #endif
@@ -258,6 +306,14 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         states[node] = state::settled;
 
         group_seen_distances[node + my_nodes_start].store(-INFINITY, std::memory_order_relaxed);
+
+#if defined(TRAFF)
+        for (const edge& edge : thread_edges_by_node[node]) {
+            if (group_seen_distances[edge.destination].load(std::memory_order_relaxed) >= 0.0) {
+                m_predecessors_in_fringe[edge.destination].fetch_sub(1, std::memory_order_relaxed);
+            }
+        }
+#endif
 
         for (const edge& e : thread_edges_by_node[node]) {
             if (distances[node] + e.cost < group_seen_distances[e.destination].load(std::memory_order_relaxed)) {
@@ -281,7 +337,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     for (int phase = 0;; ++phase) {
         perf.next_timeblock("thresholds");
 
-#if defined(CRAUSER_IN) || defined(CRAUSER_INDYN)
+#if defined(CRAUSER_IN) || defined(CRAUSER_INDYN) || defined(TRAFF)
 #if defined(Q_ARRAY)
         const double my_in_threshold =
             fringe.empty() ? INFINITY : distances[*std::max_element(fringe.begin(), fringe.end(), cmp_distance)];
@@ -331,6 +387,11 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             if (distances[node] <= out_threshold)
                 return false;
 #endif
+#if defined(TRAFF)
+            if (distances[node] - min_pred_pred[node] <= in_threshold &&
+                m_predecessors_in_fringe[node + my_nodes_start].load(std::memory_order_relaxed) == 0)
+                return false;
+#endif
             return true;
         };
 
@@ -349,6 +410,9 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #if defined(CRAUSER_OUT) || defined(CRAUSER_OUTDYN)
             crauser_out_queue.erase(crauser_out_queue_handles[node]);
 #endif
+#if defined(TRAFF)
+            traff_queue.erase(traff_queue_handles[node]);
+#endif
         }
 #endif
 
@@ -361,8 +425,52 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #if defined(CRAUSER_IN) || defined(CRAUSER_INOUT)
             crauser_in_queue.erase(crauser_in_queue_handles[node]);
 #endif
+#if defined(TRAFF)
+            traff_queue.erase(traff_queue_handles[node]);
+#endif
         }
 #endif
+
+#if defined(TRAFF)
+        traff_candidates.clear();
+        while (!traff_queue.empty() &&
+               distances[traff_queue.top()] - min_pred_pred[traff_queue.top()] <= in_threshold) {
+            size_t node = traff_queue.top();
+            traff_queue.pop();
+            traff_candidates.push_back(node);
+            distance_queue.erase(distance_queue_handles[node]);
+#if defined(CRAUSER_OUT) || defined(CRAUSER_OUTDYN)
+            crauser_out_queue.erase(crauser_out_queue_handles[node]);
+#endif
+#if defined(CRAUSER_IN) || defined(CRAUSER_INOUT)
+            crauser_in_queue.erase(crauser_in_queue_handles[node]);
+#endif
+        }
+        for (size_t node : traff_candidates) {
+            if (m_predecessors_in_fringe[node + my_nodes_start].load(std::memory_order_relaxed) == 0) {
+                todo.push_back(node);
+            } else {
+                distance_queue_handles[node] = distance_queue.push(node);
+#if defined(CRAUSER_IN) || defined(CRAUSER_INDYN)
+                crauser_in_queue_handles[node] = crauser_in_queue.push(node);
+#endif
+#if defined(CRAUSER_OUT) || defined(CRAUSER_OUTDYN)
+                crauser_out_queue_handles[node] = crauser_out_queue.push(node);
+#endif
+#if defined(TRAFF)
+                traff_queue_handles[node] = traff_queue.push(node);
+#endif
+            }
+        }
+#endif
+#endif
+
+#if defined(TRAFF)
+        // Only Träff's criteria needs a barrier at this point in time, because it reads from the
+        // global array m_predecessors_in_fringe, which is going to be changed in the relax
+        // step.
+        perf.next_timeblock("fill_todo_traff_barrier");
+        threads.barrier_collective();
 #endif
 
         perf.next_timeblock("relax");
