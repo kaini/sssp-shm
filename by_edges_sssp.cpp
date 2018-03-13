@@ -132,6 +132,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
         }
 #endif
 
+        perf.counter_add("phases", 1);
         perf.next_timeblock("relax");
         for (size_t node : todo) {
             BOOST_ASSERT(states[node] == state::fringe);

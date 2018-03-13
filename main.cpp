@@ -347,7 +347,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Perf counters:\n";
     for (int t = 0; t < thread_count; ++t) {
         std::cout << "Thread " << t << "\n";
-        for (const auto& time : algorithm.perf()[t].times()) {
+        for (const auto& time : algorithm.perf()[t].values()) {
             std::cout << "\t" << time.first << " = " << time.second << "\n";
         }
     }

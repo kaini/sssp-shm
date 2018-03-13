@@ -69,6 +69,8 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
             break;
         }
 
+        perf.counter_add("phases", 1);
+
         auto& bucket = buckets[phase % buckets.size()];
         delayed_nodes.clear();
 
@@ -81,6 +83,8 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
             if (m_inner_done.load(std::memory_order_relaxed)) {
                 break;
             }
+
+            perf.counter_add("subphases", 1);
 
             // Clear the bucket because reinsertions are going to happen while
             // iterating over it

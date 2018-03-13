@@ -376,6 +376,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         }
 #endif
 
+        perf.counter_add("phases", 1);
         perf.next_timeblock("fill_todo");
         todo.clear();
 
