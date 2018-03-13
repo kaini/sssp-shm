@@ -123,7 +123,7 @@ static void distribute_nodes_generate_uniform_collective(thread_group& threads,
     }
     BOOST_ASSERT(edge_count == edge_at);
 
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 }
 
 static void distribute_edges_generate_uniform_collective(thread_group& threads,
@@ -163,7 +163,7 @@ static void distribute_edges_generate_uniform_collective(thread_group& threads,
         }
     }
 
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 }
 
 int main(int argc, char* argv[]) {
@@ -284,7 +284,7 @@ int main(int argc, char* argv[]) {
                 core = pu;
             }
             if (hwloc_set_cpubind(topo, core->cpuset, HWLOC_CPUBIND_THREAD) == -1) {
-                threads.critical_section([] { std::cerr << "Could not bind a thread, ignoring ...\n"; });
+                threads.critical_section([] { std::cerr << "Could not bind a thread, ignoring ...\n"; }, false);
             }
 
             // Generate the graph
@@ -297,16 +297,18 @@ int main(int argc, char* argv[]) {
             distribute_edges_generate_uniform_collective(
                 threads, rank, node_count, edge_chance, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
 #endif
-            threads.reduce_linear_collective(global_edge_count, size_t(0), edges_by_thread[rank].size(), std::plus<>());
+            threads.reduce_linear_collective(
+                global_edge_count, size_t(0), edges_by_thread[rank].size(), std::plus<>(), false);
             size_t edge_count = global_edge_count.load(std::memory_order_relaxed);
 
             auto gen_end = std::chrono::steady_clock::now();
             threads.reduce_linear_collective(gen_time,
                                              0.0,
                                              (gen_end - gen_start).count() / 1000000000.0,
-                                             [](double a, double b) { return std::max(a, b); });
+                                             [](double a, double b) { return std::max(a, b); },
+                                             false);
             threads.single_collective(
-                [&] { std::cout << "Gen time: " << gen_time.load(std::memory_order_relaxed) << "\n"; });
+                [&] { std::cout << "Gen time: " << gen_time.load(std::memory_order_relaxed) << "\n"; }, false);
 
             // Form the thread groups
             int group_rank = group_by_thread[rank];
@@ -314,10 +316,9 @@ int main(int argc, char* argv[]) {
                 groups[group_rank].thread_group.reset(new thread_group(
                     groups[group_rank].size, topo, hwloc_get_obj_by_depth(topo, group_layer, group_rank)->cpuset));
             }
-            threads.barrier_collective();
+            threads.barrier_collective(true);
 
             // Time & run the algorithm
-            threads.barrier_collective();
             auto start = std::chrono::steady_clock::now();
             carray<array_slice<const edge>>& edges = edges_by_thread_by_node[rank];
             carray<double>& distances = distances_by_thread[rank] = carray<double>(edges.size(), INFINITY);

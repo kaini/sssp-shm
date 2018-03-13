@@ -48,11 +48,13 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
     distance_queue_t distance_queue(cmp_distance);
     carray<distance_queue_t::handle_type> distance_queue_handles(node_count);
 
-    threads.single_collective([&] {
-        m_global_distances = carray<std::atomic<double>>(node_count);
-        m_global_updated = carray<size_t>(node_count * threads.thread_count());
-        m_global_updated_at.store(0, std::memory_order_relaxed);
-    });
+    threads.single_collective(
+        [&] {
+            m_global_distances = carray<std::atomic<double>>(node_count);
+            m_global_updated = carray<size_t>(node_count * threads.thread_count());
+            m_global_updated_at.store(0, std::memory_order_relaxed);
+        },
+        true);
 
 #if defined(CRAUSER_OUT)
     carray<double> min_outgoing(node_count);
@@ -71,7 +73,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
          ++i) {
         m_global_distances[i].store(INFINITY, std::memory_order_relaxed);
     }
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 
     for (size_t node = 0; node < node_count; ++node) {
         double min_outgoing = INFINITY;
@@ -84,12 +86,12 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
             atomic_min(m_global_distances[node], min_outgoing);
         }
     }
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 
     for (size_t node = 0; node < node_count; ++node) {
         min_outgoing[node] = m_global_distances[node].load(std::memory_order_relaxed);
     }
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 #endif
 
     for (size_t i = threads.chunk_start(thread_rank, node_count), end = i + threads.chunk_size(thread_rank, node_count);
@@ -97,7 +99,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
          ++i) {
         m_global_distances[i].store(INFINITY, std::memory_order_relaxed);
     }
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 
     distances[0] = 0.0;
     predecessors[0] = -1;
@@ -107,7 +109,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
     crauser_out_queue_handles[0] = crauser_out_queue.push(0);
 #endif
     m_global_distances[0].store(0.0, std::memory_order_relaxed);
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 
     int phase;
     for (phase = 0;; ++phase) {
@@ -159,7 +161,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
         }
 
         perf.next_timeblock("relax_barrier");
-        threads.barrier_collective();
+        threads.barrier_collective(true);
 
         perf.next_timeblock("announce_updated");
         for (size_t node : updated) {
@@ -169,7 +171,7 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
         }
 
         perf.next_timeblock("announce_updated_barrier");
-        threads.barrier_collective();
+        threads.barrier_collective(true);
 
         perf.next_timeblock("merge_updated");
         for (size_t i = 0, end = m_global_updated_at.load(std::memory_order_relaxed); i < end; ++i) {
@@ -198,10 +200,10 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
         }
 
         perf.next_timeblock("merge_updated_barrier");
-        threads.barrier_collective();
+        threads.barrier_collective(true);
     }
 
     perf.end_timeblock();
-    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); });
+    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); }, true);
     m_perf[thread_rank] = std::move(perf);
 }

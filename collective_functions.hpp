@@ -71,26 +71,27 @@ class thread_group {
     }
 
     // A mutex around the function.
-    template <typename F> void critical_section(F&& fun) {
+    template <typename F> void critical_section(F&& fun, bool memory_fence) {
+        // Memory fence always happens implicitly over the mutex
         std::lock_guard<std::mutex> lock(m_critical_section_mutex);
         fun();
     }
 
     // Executes the function once in the group.
-    template <typename F> void single_collective(F&& fun) {
+    template <typename F> void single_collective(F&& fun, bool memory_fence) {
         m_single_do.store(true, std::memory_order_relaxed);
-        barrier_collective();
+        barrier_collective(memory_fence);
         if (m_single_do.exchange(false, std::memory_order_relaxed)) {
             fun();
         }
-        barrier_collective();
+        barrier_collective(memory_fence);
     }
 
     // Barrier. Synchronizes memory.
     // Inspired by the boost barrier implementation but without condition variables and
     // mutexes. Instead I use a spinlock here. Nevertheless I have to enforce a memory
     // ordering here.
-    void barrier_collective(bool memory_fence = true) {
+    void barrier_collective(bool memory_fence) {
         if (memory_fence) {
             // Synchronize memory
             std::atomic_thread_fence(std::memory_order_release);
@@ -122,9 +123,13 @@ class thread_group {
 
     // Linear reduction of a single atomic variable. start and reduce has to be the same on each thread.
     template <typename T, typename F>
-    void reduce_linear_collective(std::atomic<T>& into, const T& start, const T& contribution, F&& reduce) {
+    void reduce_linear_collective(std::atomic<T>& into,
+                                  const T& start,
+                                  const T& contribution,
+                                  F&& reduce,
+                                  bool memory_fence) {
         into.store(start, std::memory_order_relaxed);
-        barrier_collective();
+        barrier_collective(memory_fence);
         T current_value = into.load(std::memory_order_relaxed);
         T wanted_value = reduce(contribution, current_value);
         while (wanted_value != current_value &&
@@ -132,7 +137,7 @@ class thread_group {
                    current_value, wanted_value, std::memory_order_relaxed, std::memory_order_relaxed)) {
             wanted_value = reduce(contribution, current_value);
         }
-        barrier_collective();
+        barrier_collective(memory_fence);
     }
 
   private:

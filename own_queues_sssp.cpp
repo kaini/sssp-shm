@@ -120,20 +120,22 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
     // Globally shared data
-    threads.single_collective([&] {
-        m_seen_distances = carray<carray<std::atomic<double>>>(group_count);
-        m_relaxations = carray<relaxed_vector<relaxation>>(threads.thread_count());
+    threads.single_collective(
+        [&] {
+            m_seen_distances = carray<carray<std::atomic<double>>>(group_count);
+            m_relaxations = carray<relaxed_vector<relaxation>>(threads.thread_count());
 #if defined(CRAUSER_IN) || defined(TRAFF)
-        m_min_incoming = carray<std::atomic<double>>(node_count);
+            m_min_incoming = carray<std::atomic<double>>(node_count);
 #endif
 #if defined(CRAUSER_INDYN) || defined(TRAFF)
-        m_incoming_at = carray<std::atomic<size_t>>(threads.thread_count());
-        m_incoming_edges = carray<array_slice<edge>>(threads.thread_count());
+            m_incoming_at = carray<std::atomic<size_t>>(threads.thread_count());
+            m_incoming_edges = carray<array_slice<edge>>(threads.thread_count());
 #endif
 #if defined(TRAFF)
-        m_predecessors_in_fringe = carray<std::atomic<size_t>>(node_count);
+            m_predecessors_in_fringe = carray<std::atomic<size_t>>(node_count);
 #endif
-    });
+        },
+        true);
 
     relaxed_vector<relaxation>& my_relaxations = m_relaxations[thread_rank];
     my_relaxations.init(threads, thread_rank, edge_count);
@@ -144,7 +146,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
 #endif
 
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 
     // Exchange incoming edges
 #if defined(CRAUSER_INDYN) || defined(TRAFF)
@@ -157,12 +159,12 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     for (int t = 0; t < threads.thread_count(); ++t) {
         m_incoming_at[t].fetch_add(edge_counts[t], std::memory_order_relaxed);
     }
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 
     carray<edge> thread_in_edges(m_incoming_at[thread_rank].load(std::memory_order_relaxed));
     m_incoming_at[thread_rank].store(0, std::memory_order_relaxed);
     m_incoming_edges[thread_rank] = array_slice<edge>(thread_in_edges.data(), thread_in_edges.size());
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 
     for (size_t node = 0; node < my_nodes_count; ++node) {
         for (const edge& edge : thread_edges_by_node[node]) {
@@ -170,7 +172,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             m_incoming_edges[dest_thread][m_incoming_at[dest_thread].fetch_add(1, std::memory_order_relaxed)] = edge;
         }
     }
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 
     std::sort(thread_in_edges.begin(), thread_in_edges.end(), [](const edge& a, const edge& b) {
         return a.destination < b.destination;
@@ -218,7 +220,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
 #if defined(CRAUSER_IN) || defined(TRAFF)
-    threads.barrier_collective();
+    threads.barrier_collective(true);
 #endif
 
 #if defined(CRAUSER_IN)
@@ -241,7 +243,8 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
     // Group shared data
-    group_threads.single_collective([&] { m_seen_distances[group_rank] = carray<std::atomic<double>>(node_count); });
+    group_threads.single_collective([&] { m_seen_distances[group_rank] = carray<std::atomic<double>>(node_count); },
+                                    true);
     carray<std::atomic<double>>& group_seen_distances = m_seen_distances[group_rank];
     for (size_t n = group_threads.chunk_start(group_thread_rank, node_count),
                 end = n + group_threads.chunk_size(group_thread_rank, node_count);
@@ -249,7 +252,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
          ++n) {
         group_seen_distances[n].store(INFINITY, std::memory_order_relaxed);
     }
-    group_threads.barrier_collective();
+    group_threads.barrier_collective(true);
 
     // Helper to settle a single edge.
     auto settle_edge = [&](size_t node, size_t predecessor_id, double distance) {
@@ -346,7 +349,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
         threads.reduce_linear_collective(
-            m_in_threshold, double(INFINITY), my_in_threshold, [](auto a, auto b) { return std::min(a, b); });
+            m_in_threshold, double(INFINITY), my_in_threshold, [](auto a, auto b) { return std::min(a, b); }, false);
         const double in_threshold = m_in_threshold.load(std::memory_order_relaxed);
         if (in_threshold == INFINITY) {
             break;
@@ -366,7 +369,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
         threads.reduce_linear_collective(
-            m_out_threshold, double(INFINITY), my_out_threshold, [](auto a, auto b) { return std::min(a, b); });
+            m_out_threshold, double(INFINITY), my_out_threshold, [](auto a, auto b) { return std::min(a, b); }, false);
         const double out_threshold = m_out_threshold.load(std::memory_order_relaxed);
         if (out_threshold == INFINITY) {
             break;
@@ -470,7 +473,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         // global array m_predecessors_in_fringe, which is going to be changed in the relax
         // step.
         perf.next_timeblock("fill_todo_traff_barrier");
-        threads.barrier_collective();
+        threads.barrier_collective(true);
 #endif
 
         perf.next_timeblock("relax");
@@ -479,7 +482,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         }
 
         perf.next_timeblock("relax_barrier");
-        threads.barrier_collective();
+        threads.barrier_collective(true);
 
         perf.next_timeblock("relax_inbox");
         my_relaxations.for_each(
@@ -487,7 +490,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         my_relaxations.clear();
 
         perf.next_timeblock("relax_inbox_barrier");
-        threads.barrier_collective();
+        threads.barrier_collective(true);
 
 #if defined(CRAUSER_OUTDYN) || defined(CRAUSER_INDYN)
         perf.next_timeblock("update_dynamic");
@@ -535,11 +538,11 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         }
 
         perf.next_timeblock("update_dynamic_barrier");
-        threads.barrier_collective();
+        threads.barrier_collective(true);
 #endif
     }
 
     perf.end_timeblock();
-    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); });
+    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); }, true);
     m_perf[thread_rank] = std::move(perf);
 }

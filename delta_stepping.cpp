@@ -35,7 +35,7 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
     array_slice<size_t> predecessors = out_thread_predecessors;
     carray<size_t> bucket_indices(my_nodes_count, -1);
 
-    threads.single_collective([&] { m_requests = carray<relaxed_vector<request>>(threads.thread_count()); });
+    threads.single_collective([&] { m_requests = carray<relaxed_vector<request>>(threads.thread_count()); }, true);
     m_requests[thread_rank].init(threads, thread_rank, edge_count);
 
     auto relax = [&](size_t node, double distance, size_t predecessor) {
@@ -63,7 +63,8 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
     for (int phase = 0;; ++phase) {
         // Check if all buckets are empty
         perf.next_timeblock("phase_init");
-        threads.reduce_linear_collective(m_done, true, nodes_in_buckets == 0, [](bool a, bool b) { return a && b; });
+        threads.reduce_linear_collective(
+            m_done, true, nodes_in_buckets == 0, [](bool a, bool b) { return a && b; }, false);
         if (m_done.load(std::memory_order_relaxed)) {
             break;
         }
@@ -75,7 +76,8 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
         while (true) {
             // Check if the current bucket is empty
             perf.next_timeblock("bucket_init");
-            threads.reduce_linear_collective(m_inner_done, true, bucket.empty(), [](bool a, bool b) { return a && b; });
+            threads.reduce_linear_collective(
+                m_inner_done, true, bucket.empty(), [](bool a, bool b) { return a && b; }, false);
             if (m_inner_done.load(std::memory_order_relaxed)) {
                 break;
             }
@@ -108,7 +110,7 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
             }
 
             perf.next_timeblock("bucket_relax_barrier");
-            threads.barrier_collective();
+            threads.barrier_collective(true);
 
             perf.next_timeblock("bucket_inbox");
             auto& my_requests = m_requests[thread_rank];
@@ -117,7 +119,7 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
             my_requests.clear();
 
             perf.next_timeblock("bucket_inbox_barrier");
-            threads.barrier_collective();
+            threads.barrier_collective(true);
         }
 
         // Relax the remaining heavy edges
@@ -139,7 +141,7 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
         }
 
         perf.next_timeblock("heavy_relax_barrier");
-        threads.barrier_collective();
+        threads.barrier_collective(true);
 
         perf.next_timeblock("heavy_inbox");
         auto& my_requests = m_requests[thread_rank];
@@ -148,10 +150,10 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
         my_requests.clear();
 
         perf.next_timeblock("heavy_inbox_barrier");
-        threads.barrier_collective();
+        threads.barrier_collective(true);
     }
 
     perf.end_timeblock();
-    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); });
+    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); }, true);
     m_perf[thread_rank] = std::move(perf);
 }
