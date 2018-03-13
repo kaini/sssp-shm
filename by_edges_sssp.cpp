@@ -37,8 +37,8 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
     double time = 0;
     auto distances = out_thread_distances;
     auto predecessors = out_thread_predecessors;
-    carray<state> states(node_count, state::unexplored);
-    carray<int> last_updated(node_count, INT_MIN);
+    std::vector<state> states(node_count, state::unexplored);
+    std::vector<int> last_updated(node_count, INT_MIN);
     std::vector<size_t, thread_local_allocator<size_t>> updated;
     std::vector<size_t, thread_local_allocator<size_t>> todo;
 
@@ -55,6 +55,12 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
             m_global_updated_at.store(0, std::memory_order_relaxed);
         },
         true);
+    for (size_t i = threads.chunk_start(thread_rank, node_count), end = i + threads.chunk_size(thread_rank, node_count);
+         i < end;
+         ++i) {
+        new (&m_global_distances[i]) std::atomic<double>(INFINITY);
+    }
+    threads.barrier_collective(true);
 
 #if defined(CRAUSER_OUT)
     carray<double> min_outgoing(node_count);
@@ -205,6 +211,6 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
     }
 
     perf.end_timeblock();
-    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); }, true);
+    threads.single_collective([&] { m_perf.resize(threads.thread_count()); }, true);
     m_perf[thread_rank] = std::move(perf);
 }

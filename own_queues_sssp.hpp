@@ -50,9 +50,9 @@ class own_queues_sssp {
     };
 
     size_t m_node_count;
-    carray<relaxed_vector<relaxation>> m_relaxations;
-    carray<carray<std::atomic<double>>> m_seen_distances; // by group
-    carray<perf_counter> m_perf;
+    std::vector<std::unique_ptr<relaxed_vector<relaxation>>> m_relaxations;
+    std::vector<carray<std::atomic<double>>> m_seen_distances; // by group
+    std::vector<perf_counter> m_perf;
 
 #if defined(CRAUSER_IN)
     carray<std::atomic<double>> m_min_incoming;
@@ -61,7 +61,7 @@ class own_queues_sssp {
 
 #if defined(CRAUSER_INDYN)
     carray<std::atomic<size_t>> m_incoming_at;
-    carray<array_slice<edge>> m_incoming_edges;
+    std::vector<array_slice<edge>> m_incoming_edges;
     std::atomic<double> m_in_threshold;
 #endif
 
@@ -78,7 +78,7 @@ class own_queues_sssp {
 #if !defined(CRAUSER_INDYN)
     // Reuse CRAUSER_INDYN to exchange incoming edges
     carray<std::atomic<size_t>> m_incoming_at;
-    carray<array_slice<edge>> m_incoming_edges;
+    std::vector<array_slice<edge>> m_incoming_edges;
 #endif
 #endif
 };

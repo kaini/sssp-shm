@@ -27,16 +27,16 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
     perf.first_timeblock("init");
     const size_t my_nodes_count = threads.chunk_size(thread_rank, node_count);
     const size_t my_nodes_start = threads.chunk_start(thread_rank, node_count);
-    carray<node_set> buckets(static_cast<size_t>(std::ceil(1.0 / m_delta)) + 1);
+    std::vector<node_set> buckets(static_cast<size_t>(std::ceil(1.0 / m_delta)) + 1);
     node_set current_bucket;
     node_set delayed_nodes;
     size_t nodes_in_buckets = 0;
     array_slice<double> distances = out_thread_distances;
     array_slice<size_t> predecessors = out_thread_predecessors;
-    carray<size_t> bucket_indices(my_nodes_count, -1);
+    std::vector<size_t> bucket_indices(my_nodes_count, -1);
 
-    threads.single_collective([&] { m_requests = carray<relaxed_vector<request>>(threads.thread_count()); }, true);
-    m_requests[thread_rank].init(threads, thread_rank, edge_count);
+    threads.single_collective([&] { m_requests.resize(threads.thread_count()); }, true);
+    m_requests[thread_rank].reset(new relaxed_vector<request>(threads, thread_rank, edge_count));
 
     auto relax = [&](size_t node, double distance, size_t predecessor) {
         if (distance < distances[node]) {
@@ -106,7 +106,7 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
                             relax(edge.destination - my_nodes_start, distances[node] + edge.cost, edge.source);
                         } else {
                             // remote relaxation
-                            m_requests[dest_thread].push_back(
+                            m_requests[dest_thread]->push_back(
                                 request(edge.destination, distances[node] + edge.cost, edge.source));
                         }
                     }
@@ -117,7 +117,7 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
             threads.barrier_collective(true);
 
             perf.next_timeblock("bucket_inbox");
-            auto& my_requests = m_requests[thread_rank];
+            auto& my_requests = *m_requests[thread_rank];
             my_requests.for_each(
                 [&](const request& req) { relax(req.node - my_nodes_start, req.distance, req.predecessor); });
             my_requests.clear();
@@ -137,7 +137,7 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
                         relax(edge.destination - my_nodes_start, distances[node] + edge.cost, edge.source);
                     } else {
                         // remote relaxation
-                        m_requests[dest_thread].push_back(
+                        m_requests[dest_thread]->push_back(
                             request(edge.destination, distances[node] + edge.cost, edge.source));
                     }
                 }
@@ -148,7 +148,7 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
         threads.barrier_collective(true);
 
         perf.next_timeblock("heavy_inbox");
-        auto& my_requests = m_requests[thread_rank];
+        auto& my_requests = *m_requests[thread_rank];
         my_requests.for_each(
             [&](const request& req) { relax(req.node - my_nodes_start, req.distance, req.predecessor); });
         my_requests.clear();
@@ -158,6 +158,6 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
     }
 
     perf.end_timeblock();
-    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); }, true);
+    threads.single_collective([&] { m_perf.resize(threads.thread_count()); }, true);
     m_perf[thread_rank] = std::move(perf);
 }

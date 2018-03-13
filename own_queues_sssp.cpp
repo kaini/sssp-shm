@@ -44,7 +44,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
     array_slice<double> distances = out_thread_distances;
     array_slice<size_t> predecessors = out_thread_predecessors;
-    carray<state> states(my_nodes_count, state::unexplored);
+    std::vector<state> states(my_nodes_count, state::unexplored);
     std::vector<size_t, thread_local_allocator<size_t>> todo;
 
     auto cmp_distance = [&](size_t a, size_t b) { return distances[a] > distances[b]; };
@@ -54,11 +54,11 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     using distance_queue_t =
         fibonacci_heap<size_t, compare<decltype(cmp_distance)>, allocator<thread_local_allocator<size_t>>>;
     distance_queue_t distance_queue(cmp_distance);
-    carray<distance_queue_t::handle_type> distance_queue_handles(my_nodes_count);
+    std::vector<distance_queue_t::handle_type> distance_queue_handles(my_nodes_count);
 #endif
 
 #if defined(CRAUSER_IN)
-    carray<double> min_incoming(my_nodes_count);
+    std::vector<double> min_incoming(my_nodes_count);
     auto min_incoming_value = [&](size_t n) { return min_incoming[n]; };
     auto cmp_crauser_in = [&](size_t a, size_t b) {
         return distances[a] - min_incoming_value(a) > distances[b] - min_incoming_value(b);
@@ -66,7 +66,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
 #if defined(CRAUSER_INDYN)
-    carray<node_cost> min_incoming(my_nodes_count, node_cost{size_t(-1), INFINITY});
+    std::vector<node_cost> min_incoming(my_nodes_count, node_cost{size_t(-1), INFINITY});
     auto min_incoming_value = [&](size_t n) { return min_incoming[n].cost; };
     auto cmp_crauser_in = [&](size_t a, size_t b) {
         return distances[a] - min_incoming_value(a) > distances[b] - min_incoming_value(b);
@@ -77,11 +77,11 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     using crauser_in_queue_t =
         fibonacci_heap<size_t, compare<decltype(cmp_crauser_in)>, allocator<thread_local_allocator<size_t>>>;
     crauser_in_queue_t crauser_in_queue(cmp_crauser_in);
-    carray<crauser_in_queue_t::handle_type> crauser_in_queue_handles(my_nodes_count);
+    std::vector<crauser_in_queue_t::handle_type> crauser_in_queue_handles(my_nodes_count);
 #endif
 
 #if defined(CRAUSER_OUT)
-    carray<double> min_outgoing(my_nodes_count, INFINITY);
+    std::vector<double> min_outgoing(my_nodes_count, INFINITY);
     auto min_outgoing_value = [&](size_t n) { return min_outgoing[n]; };
     auto cmp_crauser_out = [&](size_t a, size_t b) {
         return distances[a] + min_outgoing_value(a) > distances[b] + min_outgoing_value(b);
@@ -89,7 +89,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
 #if defined(CRAUSER_OUTDYN)
-    carray<node_cost> min_outgoing(my_nodes_count, node_cost{size_t(-1), INFINITY});
+    std::vector<node_cost> min_outgoing(my_nodes_count, node_cost{size_t(-1), INFINITY});
     auto min_outgoing_value = [&](size_t n) { return min_outgoing[n].cost; };
     auto cmp_crauser_out = [&](size_t a, size_t b) {
         return distances[a] + min_outgoing_value(a) > distances[b] + min_outgoing_value(b);
@@ -100,36 +100,36 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     using crauser_out_queue_t =
         fibonacci_heap<size_t, compare<decltype(cmp_crauser_out)>, allocator<thread_local_allocator<size_t>>>;
     crauser_out_queue_t crauser_out_queue(cmp_crauser_out);
-    carray<crauser_out_queue_t::handle_type> crauser_out_queue_handles(my_nodes_count);
+    std::vector<crauser_out_queue_t::handle_type> crauser_out_queue_handles(my_nodes_count);
 #endif
 
 #if defined(TRAFF) && defined(Q_ARRAY)
-    carray<double> min_pred_pred(my_nodes_count, INFINITY);
+    std::vector<double> min_pred_pred(my_nodes_count, INFINITY);
 #endif
 
 #if defined(TRAFF) && defined(Q_HEAP)
     std::vector<size_t, thread_local_allocator<size_t>> traff_candidates;
-    carray<double> min_pred_pred(my_nodes_count, INFINITY);
+    std::vector<double> min_pred_pred(my_nodes_count, INFINITY);
     auto cmp_traff = [&](size_t a, size_t b) {
         return distances[a] - min_pred_pred[a] > distances[b] - min_pred_pred[b];
     };
     using traff_queue_t =
         fibonacci_heap<size_t, compare<decltype(cmp_traff)>, allocator<thread_local_allocator<size_t>>>;
     traff_queue_t traff_queue(cmp_traff);
-    carray<traff_queue_t::handle_type> traff_queue_handles(my_nodes_count);
+    std::vector<traff_queue_t::handle_type> traff_queue_handles(my_nodes_count);
 #endif
 
     // Globally shared data
     threads.single_collective(
         [&] {
-            m_seen_distances = carray<carray<std::atomic<double>>>(group_count);
-            m_relaxations = carray<relaxed_vector<relaxation>>(threads.thread_count());
+            m_seen_distances.resize(group_count);
+            m_relaxations.resize(threads.thread_count());
 #if defined(CRAUSER_IN) || defined(TRAFF)
             m_min_incoming = carray<std::atomic<double>>(node_count);
 #endif
 #if defined(CRAUSER_INDYN) || defined(TRAFF)
             m_incoming_at = carray<std::atomic<size_t>>(threads.thread_count());
-            m_incoming_edges = carray<array_slice<edge>>(threads.thread_count());
+            m_incoming_edges.resize(threads.thread_count());
 #endif
 #if defined(TRAFF)
             m_predecessors_in_fringe = carray<std::atomic<size_t>>(node_count);
@@ -137,12 +137,22 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         },
         true);
 
-    relaxed_vector<relaxation>& my_relaxations = m_relaxations[thread_rank];
-    my_relaxations.init(threads, thread_rank, edge_count);
+    relaxed_vector<relaxation>* my_relaxations = new relaxed_vector<relaxation>(threads, thread_rank, edge_count);
+    m_relaxations[thread_rank].reset(my_relaxations);
 
-#if defined(CRAUSER_IN)
+#if defined(CRAUSER_IN) || defined(TRAFF)
     for (size_t n = my_nodes_start; n < my_nodes_end; ++n) {
-        m_min_incoming[n].store(INFINITY, std::memory_order_relaxed);
+        new (&m_min_incoming[n]) std::atomic<double>(INFINITY);
+    }
+#endif
+
+#if defined(CRAUSER_INDYN) || defined(TRAFF)
+    new (&m_incoming_at[thread_rank]) std::atomic<size_t>(0);
+#endif
+
+#if defined(TRAFF)
+    for (size_t n = my_nodes_start; n < my_nodes_end; ++n) {
+        new (&m_predecessors_in_fringe[n]) std::atomic<size_t>(0);
     }
 #endif
 
@@ -150,7 +160,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 
     // Exchange incoming edges
 #if defined(CRAUSER_INDYN) || defined(TRAFF)
-    carray<size_t> edge_counts(threads.thread_count(), 0);
+    std::vector<size_t> edge_counts(threads.thread_count(), 0);
     for (size_t node = 0; node < my_nodes_count; ++node) {
         for (const edge& edge : thread_edges_by_node[node]) {
             edge_counts[threads.chunk_thread_at(node_count, edge.destination)] += 1;
@@ -161,7 +171,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
     threads.barrier_collective(true);
 
-    carray<edge> thread_in_edges(m_incoming_at[thread_rank].load(std::memory_order_relaxed));
+    std::vector<edge> thread_in_edges(m_incoming_at[thread_rank].load(std::memory_order_relaxed));
     m_incoming_at[thread_rank].store(0, std::memory_order_relaxed);
     m_incoming_edges[thread_rank] = array_slice<edge>(thread_in_edges.data(), thread_in_edges.size());
     threads.barrier_collective(true);
@@ -177,7 +187,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     std::sort(thread_in_edges.begin(), thread_in_edges.end(), [](const edge& a, const edge& b) {
         return a.destination < b.destination;
     });
-    carray<array_slice<const edge>> thread_in_edges_by_node(my_nodes_count);
+    std::vector<array_slice<const edge>> thread_in_edges_by_node(my_nodes_count);
     for (size_t node = 0, at = 0; node < my_nodes_count; ++node) {
         size_t start = at;
         while (at < thread_in_edges.size() && thread_in_edges[at].destination == node + my_nodes_start) {
@@ -250,7 +260,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
                 end = n + group_threads.chunk_size(group_thread_rank, node_count);
          n < end;
          ++n) {
-        group_seen_distances[n].store(INFINITY, std::memory_order_relaxed);
+        new (&group_seen_distances[n]) std::atomic<double>(INFINITY);
     }
     group_threads.barrier_collective(true);
 
@@ -325,7 +335,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
                 if (dest_thread == thread_rank) {
                     settle_edge(e.destination - my_nodes_start, node + my_nodes_start, distances[node] + e.cost);
                 } else {
-                    m_relaxations[dest_thread].push_back(
+                    m_relaxations[dest_thread]->push_back(
                         relaxation{e.destination, node + my_nodes_start, distances[node] + e.cost});
                 }
             }
@@ -426,7 +436,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             distance_queue.pop();
             todo.push_back(node);
             crauser_out_queue.erase(crauser_out_queue_handles[node]);
-#if defined(CRAUSER_IN) || defined(CRAUSER_INOUT)
+#if defined(CRAUSER_IN) || defined(CRAUSER_INDYN)
             crauser_in_queue.erase(crauser_in_queue_handles[node]);
 #endif
 #if defined(TRAFF)
@@ -446,7 +456,7 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #if defined(CRAUSER_OUT) || defined(CRAUSER_OUTDYN)
             crauser_out_queue.erase(crauser_out_queue_handles[node]);
 #endif
-#if defined(CRAUSER_IN) || defined(CRAUSER_INOUT)
+#if defined(CRAUSER_IN) || defined(CRAUSER_INDYN)
             crauser_in_queue.erase(crauser_in_queue_handles[node]);
 #endif
         }
@@ -486,9 +496,9 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
         threads.barrier_collective(true);
 
         perf.next_timeblock("relax_inbox");
-        my_relaxations.for_each(
+        my_relaxations->for_each(
             [&](const relaxation& r) { settle_edge(r.node - my_nodes_start, r.predecessor, r.distance); });
-        my_relaxations.clear();
+        my_relaxations->clear();
 
         perf.next_timeblock("relax_inbox_barrier");
         threads.barrier_collective(true);
@@ -544,6 +554,6 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
     }
 
     perf.end_timeblock();
-    threads.single_collective([&] { m_perf = carray<perf_counter>(threads.thread_count()); }, true);
+    threads.single_collective([&] { m_perf.resize(threads.thread_count()); }, true);
     m_perf[thread_rank] = std::move(perf);
 }

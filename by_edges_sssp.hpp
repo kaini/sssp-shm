@@ -32,7 +32,7 @@ class by_edges_sssp {
     carray<std::atomic<double>> m_global_distances;
     carray<size_t> m_global_updated;
     std::atomic<size_t> m_global_updated_at;
-    carray<perf_counter> m_perf;
+    std::vector<perf_counter> m_perf;
 
 #if defined(CRAUSER_OUT)
     std::atomic<double> m_out_threshold;

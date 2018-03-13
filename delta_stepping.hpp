@@ -42,8 +42,8 @@ class delta_stepping {
     double m_delta;
     std::atomic<bool> m_done;
     std::atomic<bool> m_inner_done;
-    carray<relaxed_vector<request>> m_requests;
-    carray<perf_counter> m_perf;
+    std::vector<std::unique_ptr<relaxed_vector<request>>> m_requests;
+    std::vector<perf_counter> m_perf;
 };
 
 } // namespace sssp

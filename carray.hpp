@@ -2,15 +2,26 @@
 #include "array_slice.hpp"
 #include <algorithm>
 #include <boost/assert.hpp>
+#include <functional>
 #include <memory>
 
 namespace sssp {
 
+using carray_alloc = std::function<void*(size_t)>;
+using carray_free = std::function<void(void*, size_t)>;
+
+extern carray_alloc malloc_alloc;
+extern carray_free malloc_free;
+
 template <typename T> class carray {
   public:
+    static_assert(std::is_trivially_destructible<T>::value, "T has to be trivially destructible");
+
     carray() : m_size(0), m_data(nullptr) {}
-    carray(size_t size) : m_size(size), m_data(new T[size]()) {}
-    carray(size_t size, const T& value) : m_size(size), m_data(new T[size]) { std::fill(begin(), end(), value); }
+    // WARNING: The memory is *not* initialized! You have to use placement new if the values are not
+    // trivially constructible.
+    carray(size_t size, carray_alloc alloc = malloc_alloc, carray_free free = malloc_free)
+        : m_size(size), m_data(static_cast<T*>(alloc(sizeof(T) * size)), [size, free](T* ptr) { free(ptr, size); }) {}
 
     T* begin() { return m_data.get(); }
     T* end() { return m_data.get() + m_size; }
@@ -36,7 +47,7 @@ template <typename T> class carray {
 
   private:
     size_t m_size;
-    std::unique_ptr<T[]> m_data;
+    std::unique_ptr<T[], std::function<void(T*)>> m_data;
 };
 
 } // namespace sssp

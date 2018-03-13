@@ -25,9 +25,9 @@ void sssp::dijkstra(array_slice<const array_slice<const edge>> edges_by_node,
     using distance_queue_t =
         fibonacci_heap<size_t, compare<decltype(cmp_distance)>, allocator<thread_local_allocator<size_t>>>;
     distance_queue_t distance_queue(cmp_distance);
-    carray<distance_queue_t::handle_type> distance_queue_handles(node_count);
+    std::vector<distance_queue_t::handle_type> distance_queue_handles(node_count);
 
-    carray<state> states(node_count, state::unexplored);
+    std::vector<state> states(node_count, state::unexplored);
     if (prefill_fringe.size()) {
         for (size_t n = 0; n < node_count; ++n) {
             if (prefill_fringe[n]) {

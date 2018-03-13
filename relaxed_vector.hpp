@@ -14,19 +14,20 @@ namespace sssp {
 // This datastructure does not emit any memory fences! To be able to read elements
 // you have to enforce a memory fence, e.g., by using threads.barrier_collective().
 template <typename T> class relaxed_vector {
-    static_assert(std::is_trivially_constructible<T>::value, "");
-    static_assert(std::is_trivially_assignable<T, T>::value, "");
-    static_assert(std::is_trivially_destructible<T>::value, "");
+    static_assert(std::is_trivial<T>::value, "T is not trivial");
 
     static constexpr size_t chunk_size = 1024 * 1024;
 
   public:
-    void init(thread_group& threads, int owner_rank, size_t max_size) {
+    relaxed_vector(thread_group& threads, int owner_rank, size_t max_size) {
         m_threads = &threads;
         m_owner = owner_rank;
         m_at.store(0, std::memory_order_relaxed);
         m_data = carray<std::atomic<T*>>(max_size / chunk_size + 1);
-        m_owned_memory = carray<thread_group::unique_ptr>(m_data.size());
+        for (size_t i = 0; i < m_data.size(); ++i) {
+            new (&m_data[i]) std::atomic<T*>(nullptr);
+        }
+        m_owned_memory.resize(m_data.size());
     }
 
     void push_back(const T& item) {
@@ -78,7 +79,7 @@ template <typename T> class relaxed_vector {
     int m_owner;
     carray<std::atomic<T*>> m_data;
     std::atomic<size_t> m_at;
-    carray<thread_group::unique_ptr> m_owned_memory;
+    std::vector<thread_group::unique_ptr> m_owned_memory;
 };
 
 } // namespace sssp

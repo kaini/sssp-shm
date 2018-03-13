@@ -13,7 +13,7 @@ set (CMAKE_CXX_STANDARD 14)
 if (MSVC)
 	# TODO With cmake 3.10+ this if can be removed.
 	set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++${CMAKE_CXX_STANDARD}")
-	add_definitions (-D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX)
+	add_definitions (-D_USE_MATH_DEFINES -D_WIN32_WINNT=0x0A00 -D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -D_ENABLE_ATOMIC_ALIGNMENT_FIX)
 else ()
 	set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m64")
 	set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
@@ -67,6 +67,7 @@ set (HEADERS
 )
 set (SOURCES
 	buddy_allocator.cpp
+	carray.cpp
 	dijkstra.cpp
 	perf_counter.cpp
 	thread_local_allocator.cpp

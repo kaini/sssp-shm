@@ -1,9 +1,10 @@
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <hwloc.h>
 #include <memory>
 #include <mutex>
-#include <vector>
+#include <numeric>
 
 namespace sssp {
 
