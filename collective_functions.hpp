@@ -1,7 +1,9 @@
 #pragma once
-#include <boost/thread/barrier.hpp>
+#include <atomic>
 #include <hwloc.h>
+#include <memory>
 #include <mutex>
+#include <vector>
 
 namespace sssp {
 
@@ -9,7 +11,7 @@ namespace sssp {
 class thread_group {
   public:
     thread_group(int thread_count, hwloc_topology_t topo, hwloc_const_bitmap_t cpuset)
-        : m_thread_count(thread_count), m_topo(topo), m_cpuset(cpuset), m_barrier(thread_count), m_single_do(false) {
+        : m_thread_count(thread_count), m_topo(topo), m_cpuset(cpuset), m_barrier({0, false}), m_single_do(false) {
         for (int t = 0; t < thread_count; ++t) {
             m_thread_cpusets.push_back(get_pu(t)->cpuset);
         }
@@ -84,8 +86,39 @@ class thread_group {
         barrier_collective();
     }
 
-    // Barrier.
-    void barrier_collective() { m_barrier.wait(); }
+    // Barrier. Synchronizes memory.
+    // Inspired by the boost barrier implementation but without condition variables and
+    // mutexes. Instead I use a spinlock here. Nevertheless I have to enforce a memory
+    // ordering here.
+    void barrier_collective(bool memory_fence = true) {
+        if (memory_fence) {
+            // Synchronize memory
+            std::atomic_thread_fence(std::memory_order_release);
+        }
+
+        // Increment the counter. If the counter is the thread count increment the generation.
+        barrier current_value = m_barrier.load(std::memory_order_relaxed);
+        bool generation = current_value.generation;
+        barrier wanted_value;
+        do {
+            wanted_value = current_value;
+            wanted_value.counter += 1;
+            if (wanted_value.counter == m_thread_count) {
+                wanted_value.generation = !wanted_value.generation;
+                wanted_value.counter = 0;
+            }
+        } while (!m_barrier.compare_exchange_weak(
+            current_value, wanted_value, std::memory_order_relaxed, std::memory_order_relaxed));
+
+        // Wait for the generation switch
+        while (generation == m_barrier.load(std::memory_order_relaxed).generation)
+            ;
+
+        if (memory_fence) {
+            // Synchronize memory
+            std::atomic_thread_fence(std::memory_order_acquire);
+        }
+    }
 
     // Linear reduction of a single atomic variable. start and reduce has to be the same on each thread.
     template <typename T, typename F>
@@ -103,11 +136,16 @@ class thread_group {
     }
 
   private:
+    struct barrier {
+        int counter;
+        bool generation;
+    };
+
     int m_thread_count;
     hwloc_topology_t m_topo;
     hwloc_const_bitmap_t m_cpuset;
     std::vector<hwloc_const_bitmap_t> m_thread_cpusets;
-    boost::barrier m_barrier;
+    std::atomic<barrier> m_barrier;
     std::atomic<bool> m_single_do;
     std::mutex m_critical_section_mutex;
 };
