@@ -125,14 +125,16 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
             m_seen_distances.resize(group_count);
             m_relaxations.resize(threads.thread_count());
 #if defined(CRAUSER_IN) || defined(TRAFF)
-            m_min_incoming = carray<std::atomic<double>>(node_count);
+            m_min_incoming = carray<std::atomic<double>>(node_count, threads.alloc_interleaved_fn(), threads.free_fn());
 #endif
 #if defined(CRAUSER_INDYN) || defined(TRAFF)
-            m_incoming_at = carray<std::atomic<size_t>>(threads.thread_count());
+            m_incoming_at =
+                carray<std::atomic<size_t>>(threads.thread_count(), threads.alloc_interleaved_fn(), threads.free_fn());
             m_incoming_edges.resize(threads.thread_count());
 #endif
 #if defined(TRAFF)
-            m_predecessors_in_fringe = carray<std::atomic<size_t>>(node_count);
+            m_predecessors_in_fringe =
+                carray<std::atomic<size_t>>(node_count, threads.alloc_interleaved_fn(), threads.free_fn());
 #endif
         },
         true);
@@ -253,8 +255,12 @@ void sssp::own_queues_sssp::run_collective(thread_group& threads,
 #endif
 
     // Group shared data
-    group_threads.single_collective([&] { m_seen_distances[group_rank] = carray<std::atomic<double>>(node_count); },
-                                    true);
+    group_threads.single_collective(
+        [&] {
+            m_seen_distances[group_rank] =
+                carray<std::atomic<double>>(node_count, threads.alloc_interleaved_fn(), threads.free_fn());
+        },
+        true);
     carray<std::atomic<double>>& group_seen_distances = m_seen_distances[group_rank];
     for (size_t n = group_threads.chunk_start(group_thread_rank, node_count),
                 end = n + group_threads.chunk_size(group_thread_rank, node_count);

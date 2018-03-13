@@ -37,10 +37,12 @@ template <typename T> class relaxed_vector {
 
         T* ptr = m_data[chunk].load(std::memory_order_relaxed);
         if (ptr == nullptr) {
-            auto new_chunk = m_threads->alloc_for_rank(m_owner, sizeof(T) * chunk_size);
+            std::unique_ptr<T, std::function<void(T*)>> new_chunk(
+                static_cast<T*>(m_threads->alloc_for_rank_fn(m_owner)(sizeof(T) * chunk_size)),
+                [=](T* ptr) { m_threads->free_fn()(ptr, sizeof(T) * chunk_size); });
             if (m_data[chunk].compare_exchange_strong(
-                    ptr, static_cast<T*>(new_chunk.get()), std::memory_order_relaxed, std::memory_order_relaxed)) {
-                ptr = static_cast<T*>(new_chunk.get());
+                    ptr, new_chunk.get(), std::memory_order_relaxed, std::memory_order_relaxed)) {
+                ptr = new_chunk.get();
                 m_owned_memory[chunk] = std::move(new_chunk);
             }
         }
@@ -79,7 +81,7 @@ template <typename T> class relaxed_vector {
     int m_owner;
     carray<std::atomic<T*>> m_data;
     std::atomic<size_t> m_at;
-    std::vector<thread_group::unique_ptr> m_owned_memory;
+    std::vector<std::unique_ptr<T, std::function<void(T*)>>> m_owned_memory;
 };
 
 } // namespace sssp

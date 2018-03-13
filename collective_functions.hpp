@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <hwloc.h>
 #include <memory>
 #include <mutex>
@@ -45,30 +46,18 @@ class thread_group {
         }
     }
 
-    class hwloc_deleter {
-      public:
-        hwloc_deleter(hwloc_topology_t topo = 0, size_t size = 0) : m_topo(topo), m_size(size) {}
-        void operator()(void* ptr) const {
-            if (ptr) {
-                hwloc_free(m_topo, ptr, m_size);
-            }
-        }
-
-      private:
-        hwloc_topology_t m_topo;
-        size_t m_size;
-    };
-
-    using unique_ptr = std::unique_ptr<void, hwloc_deleter>;
-
-    unique_ptr alloc_interleaved(size_t bytes) {
-        return unique_ptr(hwloc_alloc_membind(m_topo, bytes, m_cpuset, HWLOC_MEMBIND_INTERLEAVE, 0),
-                          hwloc_deleter(m_topo, bytes));
+    std::function<void*(size_t)> alloc_interleaved_fn() {
+        return [=](size_t bytes) { return hwloc_alloc_membind(m_topo, bytes, m_cpuset, HWLOC_MEMBIND_INTERLEAVE, 0); };
     }
 
-    unique_ptr alloc_for_rank(int destination_rank, size_t bytes) {
-        return unique_ptr(hwloc_alloc_membind(m_topo, bytes, m_thread_cpusets[destination_rank], HWLOC_MEMBIND_BIND, 0),
-                          hwloc_deleter(m_topo, bytes));
+    std::function<void*(size_t)> alloc_for_rank_fn(int rank) {
+        return [=](size_t bytes) {
+            return hwloc_alloc_membind(m_topo, bytes, m_thread_cpusets[rank], HWLOC_MEMBIND_BIND, 0);
+        };
+    }
+
+    std::function<void(void*, size_t)> free_fn() {
+        return [=](void* ptr, size_t bytes) { hwloc_free(m_topo, ptr, bytes); };
     }
 
     // A mutex around the function.
