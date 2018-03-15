@@ -31,7 +31,7 @@ endif ()
 # Find external libraries
 #########################
 add_library (boost INTERFACE)
-find_package (Boost 1.65.0 REQUIRED COMPONENTS date_time thread system)
+find_package (Boost 1.65.0 REQUIRED COMPONENTS date_time thread system program_options)
 target_include_directories (boost SYSTEM INTERFACE ${Boost_INCLUDE_DIRS})
 target_link_libraries (boost INTERFACE ${Boost_LIBRARIES})
 if (MSVC)

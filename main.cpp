@@ -3,7 +3,7 @@
 #include "dijkstra.hpp"
 #include "thread_local_allocator.hpp"
 #include <atomic>
-#include <boost/heap/fibonacci_heap.hpp>
+#include <boost/program_options.hpp>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -38,7 +38,6 @@
 #endif
 
 using namespace sssp;
-using namespace boost::heap;
 
 static std::string hwloc_type_to_string(hwloc_obj_type_t type) {
     switch (type) {
@@ -169,12 +168,50 @@ distribute_edges_generate_uniform_collective(thread_group& threads,
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 3) {
-        std::cerr << "thread_count group_layer\n";
+    namespace po = boost::program_options;
+
+    size_t node_count = 150000;
+    double edge_chance = 400.0 / node_count;
+    unsigned int seed = 55;
+    bool validate = false;
+    int thread_count = -1;
+    int group_layer = 0;
+
+    // clang-format off
+    po::options_description opts("SSSP Benchmarking Tool");
+    opts.add_options()
+        ("node_count,n", po::value(&node_count)->default_value(node_count)->required(),
+            "The number of nodes for uniform graphs")
+        ("edge_chance,e", po::value(&edge_chance)->default_value(edge_chance)->required(),
+            "The chance of a single edge for uniform graphs")
+        ("seed,s", po::value(&seed)->default_value(seed)->required(),
+            "The seed for the random number generator")
+        ("validate,v", po::bool_switch(&validate)->default_value(validate),
+            "Compare the results with a sequential implementation of Dijkstra's algorithm")
+        ("thread_count,t", po::value(&thread_count),
+            "The number of threads to use, defaults to all threads as seen by hwloc")
+        ("group_layer,g", po::value(&group_layer)->default_value(group_layer)->required(),
+            "Some algorithms perform optimizations by grouping threads. The group layer is the layer in the hwloc topology where the grouping should happen")
+        ("help,h", "Show this help message")
+        ;
+    // clang-format on
+
+    po::variables_map vm;
+    try {
+        po::store(po::parse_command_line(argc, argv, opts), vm);
+        po::notify(vm);
+    } catch (const po::error& ex) {
+        std::cerr << ex.what() << "\n";
         return EXIT_FAILURE;
     }
-    const int thread_count = atoi(argv[1]);
-    int group_layer = atoi(argv[2]);
+    if (vm.count("help")) {
+        std::cerr << opts << "\n";
+        return EXIT_SUCCESS;
+    }
+    if (!(0.0 <= edge_chance && edge_chance <= 1.0)) {
+        std::cerr << "edge_chance has to be between 0 and 1.\n";
+        return EXIT_FAILURE;
+    }
 
     hwloc_topology_t topo;
     hwloc_topology_init(&topo);
@@ -214,10 +251,9 @@ int main(int argc, char* argv[]) {
         std::cerr << "Could not bind master thread, ignoring ...\n";
     }
 
-    const size_t node_count = 150000;
-    const double edge_chance = 400.0 / node_count;
-    const unsigned int seed = 55;
-    const bool validate = true;
+    if (thread_count < 0) {
+        thread_count = hwloc_get_nbobjs_by_type(topo, HWLOC_OBJ_PU);
+    }
     std::cout << "Thread count: " << thread_count << "\n";
 
     hwloc_bitmap_t all_threads = hwloc_bitmap_alloc();
@@ -356,10 +392,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    double seq_time = 0.0;
-    bool valid = true;
-
     if (validate) {
+        double seq_time = 0.0;
+        bool valid = true;
+
         size_t edge_count = global_edge_count.load(std::memory_order_relaxed);
         std::vector<edge> edges(edge_count);
         std::vector<array_slice<const edge>> edges_by_node(node_count);
@@ -421,9 +457,11 @@ int main(int argc, char* argv[]) {
                 std::cout << "Missing result for node " << n << "\n";
             }
         }
-    }
 
-    std::cout << "Seq time: " << seq_time << "  Speedup: " << (seq_time / par_time)
-              << "  Efficiency: " << (seq_time / par_time / thread_count) << "\n";
-    return valid ? EXIT_SUCCESS : EXIT_FAILURE;
+        std::cout << "Seq time: " << seq_time << "  Speedup: " << (seq_time / par_time)
+                  << "  Efficiency: " << (seq_time / par_time / thread_count) << "\n";
+        return valid ? EXIT_SUCCESS : EXIT_FAILURE;
+    } else {
+        return EXIT_SUCCESS;
+    }
 }
