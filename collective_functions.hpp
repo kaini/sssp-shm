@@ -13,7 +13,8 @@ namespace sssp {
 class thread_group {
   public:
     thread_group(int thread_count, hwloc_topology_t topo, hwloc_const_bitmap_t cpuset)
-        : m_thread_count(thread_count), m_topo(topo), m_cpuset(cpuset), m_barrier({0, false}), m_single_do(false) {
+        : m_thread_count(thread_count), m_topo(topo), m_cpuset(cpuset), m_barrier_waiting(0),
+          m_barrier_generation(false), m_single_do(false) {
         for (int t = 0; t < thread_count; ++t) {
             m_thread_cpusets.push_back(get_pu(t)->cpuset);
         }
@@ -87,23 +88,16 @@ class thread_group {
             std::atomic_thread_fence(std::memory_order_release);
         }
 
-        // Increment the counter. If the counter is the thread count increment the generation.
-        barrier current_value = m_barrier.load(std::memory_order_relaxed);
-        bool generation = current_value.generation;
-        barrier wanted_value;
-        do {
-            wanted_value = current_value;
-            wanted_value.counter += 1;
-            if (wanted_value.counter == m_thread_count) {
-                wanted_value.generation = !wanted_value.generation;
-                wanted_value.counter = 0;
+        bool current_generation = m_barrier_generation.load(std::memory_order_relaxed);
+        int currently_waiting = m_barrier_waiting.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (currently_waiting == m_thread_count) {
+            m_barrier_generation.store(!current_generation, std::memory_order_relaxed);
+            m_barrier_waiting.fetch_sub(m_thread_count, std::memory_order_relaxed);
+        } else {
+            while (m_barrier_generation.load(std::memory_order_relaxed) == current_generation) {
+                // wait
             }
-        } while (!m_barrier.compare_exchange_weak(
-            current_value, wanted_value, std::memory_order_relaxed, std::memory_order_relaxed));
-
-        // Wait for the generation switch
-        while (generation == m_barrier.load(std::memory_order_relaxed).generation)
-            ;
+        }
 
         if (memory_fence) {
             // Synchronize memory
@@ -131,16 +125,12 @@ class thread_group {
     }
 
   private:
-    struct barrier {
-        int counter;
-        bool generation;
-    };
-
     int m_thread_count;
     hwloc_topology_t m_topo;
     hwloc_const_bitmap_t m_cpuset;
     std::vector<hwloc_const_bitmap_t> m_thread_cpusets;
-    std::atomic<barrier> m_barrier;
+    std::atomic<int> m_barrier_waiting;
+    std::atomic<bool> m_barrier_generation;
     std::atomic<bool> m_single_do;
     std::mutex m_critical_section_mutex;
 };
