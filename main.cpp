@@ -1,22 +1,12 @@
 #include "array_slice.hpp"
 #include "carray.hpp"
 #include "dijkstra.hpp"
-#include "thread_local_allocator.hpp"
-#include <atomic>
 #include <boost/program_options.hpp>
-#include <cfloat>
 #include <chrono>
-#include <cmath>
-#include <cstdlib>
 #include <hwloc.h>
 #include <iomanip>
 #include <iostream>
-#include <memory>
-#include <mutex>
-#include <random>
-#include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 #if HWLOC_API_VERSION < 0x00020000
@@ -82,91 +72,6 @@ static std::string hwloc_type_to_string(hwloc_obj_type_t type) {
     }
 }
 
-// This allows double edges and self edges, but it does not matter too much.
-static void
-distribute_nodes_generate_uniform_collective(thread_group& threads,
-                                             int thread_rank,
-                                             size_t node_count,
-                                             double edge_chance,
-                                             unsigned int seed,
-                                             std::vector<edge>& out_thread_edges,
-                                             std::vector<array_slice<const edge>>& out_thread_edges_by_node) {
-    seed *= thread_rank;
-    size_t my_nodes_count = threads.chunk_size(thread_rank, node_count);
-    size_t my_nodes_start = threads.chunk_start(thread_rank, node_count);
-    out_thread_edges_by_node.resize(my_nodes_count);
-
-    std::mt19937 edge_count_rng(seed);
-    std::binomial_distribution<size_t> edge_count_dist(node_count, edge_chance);
-    size_t edge_count = 0;
-    for (size_t n = 0; n < my_nodes_count; ++n) {
-        edge_count += edge_count_dist(edge_count_rng);
-    };
-    out_thread_edges.resize(edge_count);
-
-    edge_count_rng.seed(seed);
-    edge_count_dist.reset();
-    size_t edge_at = 0;
-    std::mt19937 other_rng(seed + 1);
-    std::uniform_int_distribution<size_t> node_dist(0, node_count - 1);
-    std::uniform_real_distribution<double> edge_cost_dist(0.0, 1.0);
-    for (size_t n = 0; n < my_nodes_count; ++n) {
-        size_t node_edge_count = edge_count_dist(edge_count_rng);
-        array_slice<edge> edges(&out_thread_edges[edge_at], node_edge_count);
-        out_thread_edges_by_node[n] = edges.as_const();
-        for (edge& e : edges) {
-            e.source = n + my_nodes_start;
-            e.destination = node_dist(other_rng);
-            e.cost = edge_cost_dist(other_rng);
-        }
-        edge_at += node_edge_count;
-    }
-    BOOST_ASSERT(edge_count == edge_at);
-
-    threads.barrier_collective(true);
-}
-
-static void
-distribute_edges_generate_uniform_collective(thread_group& threads,
-                                             int thread_rank,
-                                             size_t node_count,
-                                             double edge_chance,
-                                             unsigned int seed,
-                                             std::vector<edge>& out_thread_edges,
-                                             std::vector<array_slice<const edge>>& out_thread_edges_by_node) {
-    std::mt19937 rng(seed);
-    size_t total_edge_count = std::binomial_distribution<size_t>(node_count * node_count, edge_chance)(rng);
-    size_t my_edge_count = threads.chunk_size(thread_rank, total_edge_count);
-    out_thread_edges.resize(my_edge_count);
-    out_thread_edges_by_node.resize(node_count);
-
-    rng.seed((seed + 1) * thread_rank);
-    std::uniform_int_distribution<size_t> node_dist(0, node_count - 1);
-    std::uniform_real_distribution<double> cost_dist(0.0, 1.0);
-    for (auto& edge : out_thread_edges) {
-        edge.source = node_dist(rng);
-        edge.destination = node_dist(rng);
-        edge.cost = cost_dist(rng);
-    }
-
-    std::sort(out_thread_edges.begin(), out_thread_edges.end(), [](const edge& a, const edge& b) {
-        return a.source < b.source;
-    });
-
-    size_t at = 0;
-    for (size_t node = 0; node < node_count; ++node) {
-        size_t start = at;
-        while (at < my_edge_count && out_thread_edges[at].source == node) {
-            at += 1;
-        }
-        if (start != at) {
-            out_thread_edges_by_node[node] = array_slice<const edge>(&out_thread_edges[start], at - start);
-        }
-    }
-
-    threads.barrier_collective(true);
-}
-
 int main(int argc, char* argv[]) {
     namespace po = boost::program_options;
 
@@ -176,21 +81,30 @@ int main(int argc, char* argv[]) {
     bool validate = false;
     int thread_count = -1;
     int group_layer = 0;
+    size_t initiator_size = 5;
+    int k = 3;
+    std::string graph_type = "uniform";
 
     // clang-format off
     po::options_description opts("SSSP Benchmarking Tool");
     opts.add_options()
-        ("node_count,n", po::value(&node_count)->default_value(node_count)->required(),
+        ("graph", po::value(&graph_type)->default_value(graph_type)->required(),
+            "Graph type: uniform or kronecker")
+        ("node_count", po::value(&node_count)->default_value(node_count)->required(),
             "The number of nodes for uniform graphs")
-        ("edge_chance,e", po::value(&edge_chance)->default_value(edge_chance)->required(),
+        ("edge_chance", po::value(&edge_chance)->default_value(edge_chance)->required(),
             "The chance of a single edge for uniform graphs")
+        ("initiator-size", po::value(&initiator_size)->default_value(initiator_size)->required(),
+            "The dimension of the initiator matrix for Kronecker graphs")
+        ("k", po::value(&k)->default_value(k)->required(),
+            "The parameter k for Kronecker graphs")
         ("seed,s", po::value(&seed)->default_value(seed)->required(),
             "The seed for the random number generator")
         ("validate,v", po::bool_switch(&validate)->default_value(validate),
             "Compare the results with a sequential implementation of Dijkstra's algorithm")
         ("thread_count,t", po::value(&thread_count),
             "The number of threads to use, defaults to all threads as seen by hwloc")
-        ("group_layer,g", po::value(&group_layer)->default_value(group_layer)->required(),
+        ("group-layer,g", po::value(&group_layer)->default_value(group_layer)->required(),
             "Some algorithms perform optimizations by grouping threads. The group layer is the layer in the hwloc topology where the grouping should happen")
         ("help,h", "Show this help message")
         ;
@@ -279,6 +193,7 @@ int main(int argc, char* argv[]) {
     std::vector<double> time_by_thread(thread_count, INFINITY);
     std::atomic<double> gen_time;
     std::atomic<size_t> global_edge_count;
+    distribute_nodes_generate_kronecker distribute_nodes_generate_kronecker;
 
 #if defined(BY_NODES)
     own_queues_sssp algorithm;
@@ -328,13 +243,38 @@ int main(int argc, char* argv[]) {
             // Generate the graph
             auto gen_start = std::chrono::steady_clock::now();
 
+            if (graph_type == "uniform") {
 #if defined(BY_NODES) || defined(DELTASTEPPING)
-            distribute_nodes_generate_uniform_collective(
-                threads, rank, node_count, edge_chance, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
+                distribute_nodes_generate_uniform_collective(
+                    threads, rank, node_count, edge_chance, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
 #elif defined(BY_EDGES)
-            distribute_edges_generate_uniform_collective(
-                threads, rank, node_count, edge_chance, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
+                distribute_edges_generate_uniform_collective(
+                    threads, rank, node_count, edge_chance, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
 #endif
+            } else if (graph_type == "kronecker") {
+#if defined(BY_NODES) || defined(DELTASTEPPING)
+                distribute_nodes_generate_kronecker.run_collective(
+                    threads, rank, initiator_size, k, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
+                node_count = 1;
+                for (int i = 0; i < k; ++i) {
+                    node_count *= initiator_size;
+                }
+#elif defined(BY_EDGES)
+                threads.critical_section(
+                    [] {
+                        std::cerr << "Kronecker graphs are not supported BY_EDGES\n";
+                        std::exit(1);
+                    },
+                    false);
+#endif
+            } else {
+                threads.critical_section(
+                    [] {
+                        std::cerr << "Unknown graph type selected\n";
+                        std::exit(1);
+                    },
+                    false);
+            }
             threads.reduce_linear_collective(
                 global_edge_count, size_t(0), edges_by_thread[rank].size(), std::plus<>(), false);
             size_t edge_count = global_edge_count.load(std::memory_order_relaxed);

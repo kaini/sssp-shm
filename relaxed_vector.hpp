@@ -14,8 +14,6 @@ namespace sssp {
 // This datastructure does not emit any memory fences! To be able to read elements
 // you have to enforce a memory fence, e.g., by using threads.barrier_collective().
 template <typename T> class relaxed_vector {
-    static_assert(std::is_trivial<T>::value, "T is not trivial");
-
     static constexpr size_t chunk_size = 1024 * 1024;
 
   public:
@@ -75,6 +73,8 @@ template <typename T> class relaxed_vector {
     }
 
     void clear() { m_at.store(0, std::memory_order_relaxed); }
+
+    size_t size() const { return m_at.load(std::memory_order_relaxed); }
 
   private:
     thread_group* m_threads;

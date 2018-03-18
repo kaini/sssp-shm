@@ -69,6 +69,7 @@ set (SOURCES
 	buddy_allocator.cpp
 	carray.cpp
 	dijkstra.cpp
+	graph.cpp
 	perf_counter.cpp
 	thread_local_allocator.cpp
 )
