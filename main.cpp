@@ -90,9 +90,9 @@ int main(int argc, char* argv[]) {
     opts.add_options()
         ("graph", po::value(&graph_type)->default_value(graph_type)->required(),
             "Graph type: uniform or kronecker")
-        ("node_count", po::value(&node_count)->default_value(node_count)->required(),
+        ("node-count", po::value(&node_count)->default_value(node_count)->required(),
             "The number of nodes for uniform graphs")
-        ("edge_chance", po::value(&edge_chance)->default_value(edge_chance)->required(),
+        ("edge-chance", po::value(&edge_chance)->default_value(edge_chance)->required(),
             "The chance of a single edge for uniform graphs")
         ("initiator-size", po::value(&initiator_size)->default_value(initiator_size)->required(),
             "The dimension of the initiator matrix for Kronecker graphs")
@@ -102,7 +102,7 @@ int main(int argc, char* argv[]) {
             "The seed for the random number generator")
         ("validate,v", po::bool_switch(&validate)->default_value(validate),
             "Compare the results with a sequential implementation of Dijkstra's algorithm")
-        ("thread_count,t", po::value(&thread_count),
+        ("thread-count,t", po::value(&thread_count),
             "The number of threads to use, defaults to all threads as seen by hwloc")
         ("group-layer,g", po::value(&group_layer)->default_value(group_layer)->required(),
             "Some algorithms perform optimizations by grouping threads. The group layer is the layer in the hwloc topology where the grouping should happen")

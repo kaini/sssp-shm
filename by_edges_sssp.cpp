@@ -117,8 +117,9 @@ void sssp::by_edges_sssp::run_collective(thread_group& threads,
     m_global_distances[0].store(0.0, std::memory_order_relaxed);
     threads.barrier_collective(true);
 
-    int phase;
-    for (phase = 0;; ++phase) {
+    // Phase has to start at 1 not at 0, because I utilize +phase and -phase to
+    // distinguish the two subphases.
+    for (int phase = 1;; ++phase) {
         perf.next_timeblock("find_thresholds");
         m_global_updated_at.store(0, std::memory_order_relaxed);
         updated.clear();
