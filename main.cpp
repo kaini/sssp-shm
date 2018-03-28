@@ -84,6 +84,7 @@ int main(int argc, char* argv[]) {
     size_t initiator_size = 5;
     int k = 3;
     std::string graph_type = "uniform";
+    bool print_header = true;
 
     // clang-format off
     po::options_description opts("SSSP Benchmarking Tool");
@@ -107,6 +108,8 @@ int main(int argc, char* argv[]) {
         ("group-layer,g", po::value(&group_layer)->default_value(group_layer)->required(),
             "Some algorithms perform optimizations by grouping threads. The group layer is the layer in the hwloc topology where the grouping should happen")
         ("help,h", "Show this help message")
+        ("no-header,0", po::bool_switch(&print_header)->default_value(!print_header),
+            "Do not print the CSV header")
         ;
     // clang-format on
 
@@ -114,13 +117,14 @@ int main(int argc, char* argv[]) {
     try {
         po::store(po::parse_command_line(argc, argv, opts), vm);
         po::notify(vm);
+        print_header = !print_header;
     } catch (const po::error& ex) {
         std::cerr << ex.what() << "\n";
         return EXIT_FAILURE;
     }
     if (vm.count("help")) {
         std::cerr << opts << "\n";
-        return EXIT_SUCCESS;
+        return EXIT_FAILURE;
     }
     if (!(0.0 <= edge_chance && edge_chance <= 1.0)) {
         std::cerr << "edge_chance has to be between 0 and 1.\n";
@@ -131,33 +135,35 @@ int main(int argc, char* argv[]) {
     hwloc_topology_init(&topo);
     hwloc_topology_load(topo);
 
-    std::cerr << "Topology: (assuming symmetric topology)\n";
-    int topo_depth = hwloc_topology_get_depth(topo);
-    group_layer = std::max(0, std::min(topo_depth - 1, group_layer));
-    struct topo_layer {
-        int count = 0;
-        std::string name = "";
-    };
-    std::vector<topo_layer> effective_topo;
-    for (int d = 0; d < topo_depth; ++d) {
-        int depth_count = hwloc_get_nbobjs_by_depth(topo, d);
-        if (effective_topo.empty() || depth_count > effective_topo.back().count) {
-            effective_topo.emplace_back();
-            effective_topo.back().count = depth_count;
+    if (print_header) {
+        std::cout << "# Topology: (assuming symmetric topology)\n";
+        int topo_depth = hwloc_topology_get_depth(topo);
+        group_layer = std::max(0, std::min(topo_depth - 1, group_layer));
+        struct topo_layer {
+            int count = 0;
+            std::string name = "";
+        };
+        std::vector<topo_layer> effective_topo;
+        for (int d = 0; d < topo_depth; ++d) {
+            int depth_count = hwloc_get_nbobjs_by_depth(topo, d);
+            if (effective_topo.empty() || depth_count > effective_topo.back().count) {
+                effective_topo.emplace_back();
+                effective_topo.back().count = depth_count;
+            }
+            if (!effective_topo.back().name.empty()) {
+                effective_topo.back().name += " + ";
+            }
+            effective_topo.back().name += hwloc_type_to_string(hwloc_get_depth_type(topo, d));
+            if (d == group_layer) {
+                effective_topo.back().name += "(grouping)";
+            }
+            if (hwloc_get_next_obj_by_depth(topo, d, nullptr)->memory_arity > 0) {
+                effective_topo.back().name += "(numa node)";
+            }
         }
-        if (!effective_topo.back().name.empty()) {
-            effective_topo.back().name += " + ";
+        for (const auto& layer : effective_topo) {
+            std::cout << "# " << std::setw(4) << layer.count << "x " << layer.name << "\n";
         }
-        effective_topo.back().name += hwloc_type_to_string(hwloc_get_depth_type(topo, d));
-        if (d == group_layer) {
-            effective_topo.back().name += "(grouping)";
-        }
-        if (hwloc_get_next_obj_by_depth(topo, d, nullptr)->memory_arity > 0) {
-            effective_topo.back().name += "(numa node)";
-        }
-    }
-    for (const auto& layer : effective_topo) {
-        std::cerr << std::setw(4) << layer.count << "x " << layer.name << "\n";
     }
 
     hwloc_obj_t master_pu = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, 0);
@@ -168,7 +174,6 @@ int main(int argc, char* argv[]) {
     if (thread_count < 0) {
         thread_count = hwloc_get_nbobjs_by_type(topo, HWLOC_OBJ_PU);
     }
-    std::cout << "Thread count: " << thread_count << "\n";
 
     hwloc_bitmap_t all_threads = hwloc_bitmap_alloc();
     for (int t = 0; t < thread_count; ++t) {
@@ -191,7 +196,6 @@ int main(int argc, char* argv[]) {
     std::vector<std::vector<double>> distances_by_thread(thread_count);
     std::vector<std::vector<size_t>> predecessors_by_thread(thread_count);
     std::vector<double> time_by_thread(thread_count, INFINITY);
-    std::atomic<double> gen_time;
     std::atomic<size_t> global_edge_count;
     distribute_nodes_generate_kronecker distribute_nodes_generate_kronecker;
 
@@ -241,8 +245,6 @@ int main(int argc, char* argv[]) {
             }
 
             // Generate the graph
-            auto gen_start = std::chrono::steady_clock::now();
-
             if (graph_type == "uniform") {
 #if defined(BY_NODES) || defined(DELTASTEPPING)
                 distribute_nodes_generate_uniform_collective(
@@ -279,15 +281,6 @@ int main(int argc, char* argv[]) {
                 global_edge_count, size_t(0), edges_by_thread[rank].size(), std::plus<>(), false);
             size_t edge_count = global_edge_count.load(std::memory_order_relaxed);
 
-            auto gen_end = std::chrono::steady_clock::now();
-            threads.reduce_linear_collective(gen_time,
-                                             0.0,
-                                             (gen_end - gen_start).count() / 1000000000.0,
-                                             [](double a, double b) { return std::max(a, b); },
-                                             false);
-            threads.single_collective(
-                [&] { std::cout << "Gen time: " << gen_time.load(std::memory_order_relaxed) << "\n"; }, false);
-
             // Form the thread groups
             int group_rank = group_by_thread[rank];
             if (groups[group_rank].master == rank) {
@@ -322,14 +315,28 @@ int main(int argc, char* argv[]) {
         t.join();
     }
 
-    double par_time = *std::max_element(time_by_thread.begin(), time_by_thread.end());
-    std::cout << "Par time: " << par_time << "\n";
-    std::cout << "Perf counters:\n";
-    for (int t = 0; t < thread_count; ++t) {
-        std::cout << "Thread " << t << "\n";
-        for (const auto& time : algorithm.perf()[t].values()) {
-            std::cout << "\t" << time.first << " = " << time.second << "\n";
+    if (print_header) {
+        std::cout << "graph,node_count,edge_chance,initiator_size,k,seed,thread_count,group_layer,thread,time";
+        for (const auto& perf : algorithm.perf()[0].values()) {
+            std::cout << "," << perf.first;
         }
+        std::cout << "\n";
+    }
+    for (int t = 0; t < thread_count; ++t) {
+        std::cout << graph_type << ",";
+        std::cout << (graph_type == "uniform" ? std::to_string(node_count) : "NA") << ",";
+        std::cout << (graph_type == "uniform" ? std::to_string(edge_chance) : "NA") << ",";
+        std::cout << (graph_type == "kronecker" ? std::to_string(initiator_size) : "NA") << ",";
+        std::cout << (graph_type == "kronecker" ? std::to_string(k) : "NA") << ",";
+        std::cout << seed << ",";
+        std::cout << thread_count << ",";
+        std::cout << group_layer << ",";
+        std::cout << t << ",";
+        std::cout << time_by_thread[t];
+        for (const auto& perf : algorithm.perf()[t].values()) {
+            std::cout << "," << perf.second;
+        }
+        std::cout << "\n";
     }
 
     if (validate) {
@@ -356,15 +363,10 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        auto start = std::chrono::steady_clock::now();
-
         std::vector<double> distances(node_count, INFINITY);
         distances[0] = 0.0;
         std::vector<size_t> predecessors(node_count, -1);
         dijkstra(edges_by_node, distances, predecessors);
-
-        auto end = std::chrono::steady_clock::now();
-        seq_time = (end - start).count() / 1000000000.0;
 
         std::vector<bool> checked(node_count, false);
         for (size_t n = 0; n < node_count; ++n) {
@@ -394,12 +396,9 @@ int main(int argc, char* argv[]) {
         }
         for (size_t n = 0; n < node_count; ++n) {
             if (!checked[n]) {
-                std::cout << "Missing result for node " << n << "\n";
+                std::cerr << "Missing result for node " << n << "\n";
             }
         }
-
-        std::cout << "Seq time: " << seq_time << "  Speedup: " << (seq_time / par_time)
-                  << "  Efficiency: " << (seq_time / par_time / thread_count) << "\n";
         return valid ? EXIT_SUCCESS : EXIT_FAILURE;
     } else {
         return EXIT_SUCCESS;
