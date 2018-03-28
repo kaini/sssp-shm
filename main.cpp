@@ -316,13 +316,24 @@ int main(int argc, char* argv[]) {
     }
 
     if (print_header) {
-        std::cout << "graph,node_count,edge_chance,initiator_size,k,seed,thread_count,group_layer,thread,time";
+        std::cout
+            << "executable,graph,node_count,edge_chance,initiator_size,k,seed,thread_count,group_layer,thread,time";
         for (const auto& perf : algorithm.perf()[0].values()) {
             std::cout << "," << perf.first;
         }
         std::cout << "\n";
     }
     for (int t = 0; t < thread_count; ++t) {
+        std::string executable = argv[0];
+        size_t last_slash = executable.rfind('/');
+        if (last_slash != std::string::npos) {
+            executable = executable.substr(last_slash + 1);
+        }
+        size_t last_backslash = executable.rfind('\\');
+        if (last_backslash != std::string::npos) {
+            executable = executable.substr(last_backslash + 1);
+        }
+        std::cout << executable << ",";
         std::cout << graph_type << ",";
         std::cout << (graph_type == "uniform" ? std::to_string(node_count) : "NA") << ",";
         std::cout << (graph_type == "uniform" ? std::to_string(edge_chance) : "NA") << ",";
