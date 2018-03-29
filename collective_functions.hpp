@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <thread>
 
 namespace sssp {
 
@@ -95,7 +96,11 @@ class thread_group {
             m_barrier_waiting.fetch_sub(m_thread_count, std::memory_order_relaxed);
         } else {
             while (m_barrier_generation.load(std::memory_order_relaxed) == current_generation) {
-                // wait
+                // Note: This yield is a *must* on SPARC otherwise the barrier will be extremely
+                // slow (in the order of 100 ms) because other strands will starve. On a more
+                // modern machine than ceres it might be possible to solve this better using
+                // a monitor load and the mwait instruction.
+                std::this_thread::yield();
             }
         }
 
