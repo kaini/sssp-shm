@@ -176,17 +176,19 @@ int main(int argc, char* argv[]) {
     }
 
     hwloc_bitmap_t all_threads = hwloc_bitmap_alloc();
+    const int hwloc_core_count = hwloc_get_nbobjs_by_type(topo, HWLOC_OBJ_CORE);
+    if (hwloc_core_count == 0) {
+        std::cerr << "The topology does not contain cores!\n";
+        return EXIT_FAILURE;
+    }
     for (int t = 0; t < thread_count; ++t) {
-        hwloc_obj_t pu = hwloc_get_obj_by_type(topo, HWLOC_OBJ_PU, t);
+        hwloc_obj_t core = hwloc_get_obj_by_type(topo, HWLOC_OBJ_CORE, t % hwloc_core_count);
+        hwloc_obj_t pu = hwloc_get_obj_inside_cpuset_by_type(topo, core->cpuset, HWLOC_OBJ_PU, t / hwloc_core_count);
         if (!pu) {
-            std::cerr << "Not enought PUs!\n";
+            std::cerr << "Not enought PUs (or the system topology is not symmetric)!\n";
             return EXIT_FAILURE;
         }
-        hwloc_obj_t core = hwloc_get_ancestor_obj_by_type(topo, HWLOC_OBJ_CORE, pu);
-        if (!core) {
-            core = pu;
-        }
-        hwloc_bitmap_or(all_threads, all_threads, core->cpuset);
+        hwloc_bitmap_or(all_threads, all_threads, pu->cpuset);
     }
 
     std::vector<std::thread> thread_handles;
@@ -220,7 +222,8 @@ int main(int argc, char* argv[]) {
         hwloc_obj_t pu = threads.get_pu(rank);
         hwloc_obj_t group_obj = hwloc_get_ancestor_obj_by_depth(topo, group_layer, pu);
         if (!group_obj) {
-            std::cerr << "Found a thread that cannot be assigned to the given layer!\n";
+            std::cerr
+                << "Found a thread that cannot be assigned to the given layer (maybe the topology is not symmetric)!\n";
             return EXIT_FAILURE;
         }
         group_by_thread[rank] = static_cast<int>(group_obj->logical_index);
@@ -236,11 +239,7 @@ int main(int argc, char* argv[]) {
         thread_handles.emplace_back(std::thread([&, rank] {
             // Pin the threads
             hwloc_obj_t pu = threads.get_pu(rank);
-            hwloc_obj_t core = hwloc_get_ancestor_obj_by_type(topo, HWLOC_OBJ_CORE, pu);
-            if (!core) {
-                core = pu;
-            }
-            if (hwloc_set_cpubind(topo, core->cpuset, HWLOC_CPUBIND_THREAD) == -1) {
+            if (hwloc_set_cpubind(topo, pu->cpuset, HWLOC_CPUBIND_THREAD) == -1) {
                 threads.critical_section([] { std::cerr << "Could not bind a thread, ignoring ...\n"; }, false);
             }
 
