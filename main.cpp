@@ -13,10 +13,8 @@
 #error hwloc>=2.0.0 is required
 #endif
 
-#if (!defined(BY_NODES) && !defined(BY_EDGES) && !defined(DELTASTEPPING)) ||                                           \
-    (defined(BY_NODES) && defined(BY_EDGES)) || (defined(BY_NODES) && defined(DELTASTEPPING)) ||                       \
-    (defined(BY_EDGES) && defined(DELTASTEPPING))
-#error Define either BY_NODES or BY_EDGES or DELTASTEPPING
+#if !defined(BY_NODES) && !defined(BY_EDGES) && !defined(DELTASTEPPING) && !defined(SEQ)
+#error Define either BY_NODES or BY_EDGES or DELTASTEPPING or SEQ
 #endif
 
 #if defined(BY_NODES)
@@ -102,9 +100,9 @@ int main(int argc, char* argv[]) {
         ("seed,s", po::value(&seed)->default_value(seed)->required(),
             "The seed for the random number generator")
         ("validate,v", po::bool_switch(&validate)->default_value(validate),
-            "Compare the results with a sequential implementation of Dijkstra's algorithm")
+            "Compare the results with a sequential implementation of Dijkstra's algorithm (ignored in the sequential implementation)")
         ("thread-count,t", po::value(&thread_count),
-            "The number of threads to use, defaults to all threads as seen by hwloc")
+            "The number of threads to use, defaults to all threads as seen by hwloc (used to generate the graph in parallel in the sequential implementation)")
         ("group-layer,g", po::value(&group_layer)->default_value(group_layer)->required(),
             "Some algorithms perform optimizations by grouping threads. The group layer is the layer in the hwloc topology where the grouping should happen")
         ("help,h", "Show this help message")
@@ -118,6 +116,9 @@ int main(int argc, char* argv[]) {
         po::store(po::parse_command_line(argc, argv, opts), vm);
         po::notify(vm);
         print_header = !print_header;
+#if defined(SEQ)
+        validate = true;
+#endif
     } catch (const po::error& ex) {
         std::cerr << ex.what() << "\n";
         return EXIT_FAILURE;
@@ -245,7 +246,7 @@ int main(int argc, char* argv[]) {
 
             // Generate the graph
             if (graph_type == "uniform") {
-#if defined(BY_NODES) || defined(DELTASTEPPING)
+#if defined(BY_NODES) || defined(DELTASTEPPING) || defined(SEQ)
                 distribute_nodes_generate_uniform_collective(
                     threads, rank, node_count, edge_chance, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
 #elif defined(BY_EDGES)
@@ -253,7 +254,7 @@ int main(int argc, char* argv[]) {
                     threads, rank, node_count, edge_chance, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
 #endif
             } else if (graph_type == "kronecker") {
-#if defined(BY_NODES) || defined(DELTASTEPPING)
+#if defined(BY_NODES) || defined(DELTASTEPPING) || defined(SEQ)
                 distribute_nodes_generate_kronecker.run_collective(
                     threads, rank, initiator_size, k, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
                 node_count = 1;
@@ -280,6 +281,7 @@ int main(int argc, char* argv[]) {
                 global_edge_count, size_t(0), edges_by_thread[rank].size(), std::plus<>(), false);
             size_t edge_count = global_edge_count.load(std::memory_order_relaxed);
 
+#if !defined(SEQ)
             // Form the thread groups
             int group_rank = group_by_thread[rank];
             if (groups[group_rank].master == rank) {
@@ -308,51 +310,15 @@ int main(int argc, char* argv[]) {
                                      predecessors);
             auto end = std::chrono::steady_clock::now();
             time_by_thread[rank] = (end - start).count() / 1000000000.0;
+#endif
         }));
     }
     for (auto& t : thread_handles) {
         t.join();
     }
 
-    if (print_header) {
-        std::cout
-            << "executable,graph,node_count,edge_chance,initiator_size,k,seed,thread_count,group_layer,thread,time";
-        for (const auto& perf : algorithm.perf()[0].values()) {
-            std::cout << "," << perf.first;
-        }
-        std::cout << "\n";
-    }
-    for (int t = 0; t < thread_count; ++t) {
-        std::string executable = argv[0];
-        size_t last_slash = executable.rfind('/');
-        if (last_slash != std::string::npos) {
-            executable = executable.substr(last_slash + 1);
-        }
-        size_t last_backslash = executable.rfind('\\');
-        if (last_backslash != std::string::npos) {
-            executable = executable.substr(last_backslash + 1);
-        }
-        std::cout << executable << ",";
-        std::cout << graph_type << ",";
-        std::cout << (graph_type == "uniform" ? std::to_string(node_count) : "NA") << ",";
-        std::cout << (graph_type == "uniform" ? std::to_string(edge_chance) : "NA") << ",";
-        std::cout << (graph_type == "kronecker" ? std::to_string(initiator_size) : "NA") << ",";
-        std::cout << (graph_type == "kronecker" ? std::to_string(k) : "NA") << ",";
-        std::cout << seed << ",";
-        std::cout << thread_count << ",";
-        std::cout << group_layer << ",";
-        std::cout << t << ",";
-        std::cout << time_by_thread[t];
-        for (const auto& perf : algorithm.perf()[t].values()) {
-            std::cout << "," << perf.second;
-        }
-        std::cout << "\n";
-    }
-
     if (validate) {
-        double seq_time = 0.0;
-        bool valid = true;
-
+        // Collect all edges into a single array for the single threaded solution.
         size_t edge_count = global_edge_count.load(std::memory_order_relaxed);
         std::vector<edge> edges(edge_count);
         std::vector<array_slice<const edge>> edges_by_node(node_count);
@@ -373,11 +339,22 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Run the sequential algorithm.
+#if defined(SEQ)
+        auto start = std::chrono::steady_clock::now();
+#endif
         std::vector<double> distances(node_count, INFINITY);
         distances[0] = 0.0;
         std::vector<size_t> predecessors(node_count, -1);
         dijkstra(edges_by_node, distances, predecessors);
+#if defined(SEQ)
+        auto end = std::chrono::steady_clock::now();
+        time_by_thread[0] = (end - start).count() / 1000000000.0;
+#endif
 
+        // Compare the multi-threaded solution with the sequential solution.
+#if !defined(SEQ)
+        bool valid = true;
         std::vector<bool> checked(node_count, false);
         for (size_t n = 0; n < node_count; ++n) {
             for (int t = 0; t < threads.thread_count(); ++t) {
@@ -409,8 +386,55 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Missing result for node " << n << "\n";
             }
         }
-        return valid ? EXIT_SUCCESS : EXIT_FAILURE;
-    } else {
-        return EXIT_SUCCESS;
+        if (!valid) {
+            return EXIT_FAILURE;
+        }
+#endif
     }
+
+    if (print_header) {
+        std::cout
+            << "executable,graph,node_count,edge_chance,initiator_size,k,seed,thread_count,group_layer,thread,time";
+#if !defined(SEQ)
+        for (const auto& perf : algorithm.perf()[0].values()) {
+            std::cout << "," << perf.first;
+        }
+#endif
+        std::cout << "\n";
+    }
+    for (int t = 0; t < thread_count; ++t) {
+        std::string executable = argv[0];
+        size_t last_slash = executable.rfind('/');
+        if (last_slash != std::string::npos) {
+            executable = executable.substr(last_slash + 1);
+        }
+        size_t last_backslash = executable.rfind('\\');
+        if (last_backslash != std::string::npos) {
+            executable = executable.substr(last_backslash + 1);
+        }
+        std::cout << executable << ",";
+        std::cout << graph_type << ",";
+        std::cout << (graph_type == "uniform" ? std::to_string(node_count) : "NA") << ",";
+        std::cout << (graph_type == "uniform" ? std::to_string(edge_chance) : "NA") << ",";
+        std::cout << (graph_type == "kronecker" ? std::to_string(initiator_size) : "NA") << ",";
+        std::cout << (graph_type == "kronecker" ? std::to_string(k) : "NA") << ",";
+        std::cout << seed << ",";
+        std::cout << thread_count << ",";
+        std::cout << group_layer << ",";
+        std::cout << t << ",";
+        std::cout << time_by_thread[t];
+#if !defined(SEQ)
+        for (const auto& perf : algorithm.perf()[t].values()) {
+            std::cout << "," << perf.second;
+        }
+#endif
+        std::cout << "\n";
+#if defined(SEQ)
+        // In the sequential implementation only the first thread did something. The others
+        // were only used to generate the graph. Therefore there is no need to print them.
+        break;
+#endif
+    }
+
+    return EXIT_SUCCESS;
 }

@@ -147,3 +147,9 @@ add_variant (
 	DEFINES -DDELTASTEPPING
 	FILES delta_stepping.hpp delta_stepping.cpp
 )
+
+add_variant (
+	NAME seq
+	DEFINES -DSEQ
+	FILES
+)
