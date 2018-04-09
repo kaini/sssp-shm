@@ -163,7 +163,9 @@ void sssp::distribute_nodes_generate_kronecker::run_collective(
     const size_t my_nodes_start = threads.chunk_start(thread_rank, final_size);
     const size_t my_nodes_size = threads.chunk_size(thread_rank, final_size);
 
-    std::vector<std::vector<edge, thread_local_allocator<edge>>, thread_local_allocator<std::vector<edge>>> buckets;
+    std::vector<std::vector<edge, thread_local_allocator<edge>>,
+                thread_local_allocator<std::vector<edge, thread_local_allocator<edge>>>>
+        buckets;
     buckets.resize(my_nodes_size);
     my_inbox->for_each([&](const edge& edge) { buckets[edge.source - my_nodes_start].push_back(edge); });
 
