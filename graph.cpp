@@ -90,11 +90,12 @@ void sssp::distribute_edges_generate_uniform_collective(
 void sssp::distribute_nodes_generate_kronecker::run_collective(
     thread_group& threads,
     int thread_rank,
-    size_t start_size,
     int k,
     unsigned int seed,
     std::vector<edge>& out_thread_edges,
     std::vector<array_slice<const edge>>& out_thread_edges_by_node) {
+
+    const size_t start_size = 2;
 
     size_t final_size = 1;
     for (int i = 0; i < k; ++i) {
@@ -107,11 +108,7 @@ void sssp::distribute_nodes_generate_kronecker::run_collective(
             std::mt19937 rng(seed);
 
             m_start_size = start_size;
-            m_matrix.resize(start_size * start_size);
-            std::uniform_real_distribution<double> uniform01(0.0, 1.0);
-            for (double& entry : m_matrix) {
-                entry = uniform01(rng);
-            }
+            m_matrix = { 1.425, 0.475, 0.475, 0.125 };
 
             m_matrix_prefix_sum.resize(start_size * start_size);
             m_matrix_prefix_sum[0] = m_matrix[0];

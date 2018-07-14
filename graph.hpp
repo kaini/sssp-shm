@@ -35,7 +35,6 @@ class distribute_nodes_generate_kronecker {
     // See the simulation tool for the details of this algorithm.
     void run_collective(thread_group& threads,
                         int thread_rank,
-                        size_t start_size,
                         int k,
                         unsigned int seed,
                         std::vector<edge>& out_thread_edges,

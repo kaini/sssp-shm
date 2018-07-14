@@ -79,24 +79,26 @@ int main(int argc, char* argv[]) {
     bool validate = false;
     int thread_count = -1;
     int group_layer = 0;
-    size_t initiator_size = 5;
     int k = 3;
     std::string graph_type = "uniform";
     bool print_header = true;
+    double delta = 1.0 / (edge_chance * node_count);
 
     // clang-format off
     po::options_description opts("SSSP Benchmarking Tool");
     opts.add_options()
         ("graph", po::value(&graph_type)->default_value(graph_type)->required(),
-            "Graph type: uniform or kronecker")
+            "Graph type: uniform or kronecker (Kronecker's initiator matrix is hardcoded to 1.425, 0.475, 0.475, 0.125 (= Graph 500 matrix * 2.5)")
         ("node-count", po::value(&node_count)->default_value(node_count)->required(),
             "The number of nodes for uniform graphs")
         ("edge-chance", po::value(&edge_chance)->default_value(edge_chance)->required(),
             "The chance of a single edge for uniform graphs")
-        ("initiator-size", po::value(&initiator_size)->default_value(initiator_size)->required(),
-            "The dimension of the initiator matrix for Kronecker graphs")
         ("k", po::value(&k)->default_value(k)->required(),
             "The parameter k for Kronecker graphs")
+#if defined(DELTASTEPPING)
+        ("delta", po::value(&delta)->default_value(delta)->required(),
+            "The parameter delta for Delta-Stepping (should be in O(1/d) for good performance)")
+#endif
         ("seed,s", po::value(&seed)->default_value(seed)->required(),
             "The seed for the random number generator")
         ("validate,v", po::bool_switch(&validate)->default_value(validate),
@@ -207,7 +209,7 @@ int main(int argc, char* argv[]) {
 #elif defined(BY_EDGES)
     by_edges_sssp algorithm;
 #elif defined(DELTASTEPPING)
-    delta_stepping algorithm(0.1 / (edge_chance * node_count)); // delta = 1/d
+    delta_stepping algorithm(delta);
 #endif
 
     // Split the threads into groups
@@ -256,10 +258,10 @@ int main(int argc, char* argv[]) {
             } else if (graph_type == "kronecker") {
 #if defined(BY_NODES) || defined(DELTASTEPPING) || defined(SEQ)
                 distribute_nodes_generate_kronecker.run_collective(
-                    threads, rank, initiator_size, k, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
+                    threads, rank, k, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
                 node_count = 1;
                 for (int i = 0; i < k; ++i) {
-                    node_count *= initiator_size;
+                    node_count *= 2;
                 }
 #elif defined(BY_EDGES)
                 threads.critical_section(
@@ -339,7 +341,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Run the sequential algorithm.
+            // Run the sequential algorithm.
 #if defined(SEQ)
         auto start = std::chrono::steady_clock::now();
 #endif
@@ -394,7 +396,7 @@ int main(int argc, char* argv[]) {
 
     if (print_header) {
         std::cout
-            << "executable,graph,node_count,edge_chance,initiator_size,k,seed,thread_count,group_layer,thread,time";
+            << "executable,graph,node_count,edge_chance,k,delta,seed,thread_count,group_layer,thread,time";
 #if !defined(SEQ)
         for (const auto& perf : algorithm.perf()[0].values()) {
             std::cout << "," << perf.first;
@@ -416,8 +418,12 @@ int main(int argc, char* argv[]) {
         std::cout << graph_type << ",";
         std::cout << (graph_type == "uniform" ? std::to_string(node_count) : "NA") << ",";
         std::cout << (graph_type == "uniform" ? std::to_string(edge_chance) : "NA") << ",";
-        std::cout << (graph_type == "kronecker" ? std::to_string(initiator_size) : "NA") << ",";
         std::cout << (graph_type == "kronecker" ? std::to_string(k) : "NA") << ",";
+#if defined(DELTASTEPPING)
+        std::cout << delta << ",";
+#else
+        std::cout << "NA,";
+#endif
         std::cout << seed << ",";
         std::cout << thread_count << ",";
         std::cout << group_layer << ",";
