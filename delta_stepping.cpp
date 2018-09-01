@@ -1,5 +1,5 @@
-#include "delta_stepping.hpp"
 #include "carray.hpp"
+#include "delta_stepping.hpp"
 #include "thread_local_allocator.hpp"
 #include <iostream>
 #include <set>
@@ -34,6 +34,19 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
     array_slice<double> distances = out_thread_distances;
     array_slice<size_t> predecessors = out_thread_predecessors;
     std::vector<size_t> bucket_indices(my_nodes_count, -1);
+
+    // Seperate heavy and light edges as optimization for iteration in heavy/light phases
+    using edge_vector = std::vector<edge, thread_local_allocator<edge>>;
+    using node_edge_vector = std::vector<edge_vector, thread_local_allocator<edge_vector>>;
+    node_edge_vector light_edges(node_count);
+    node_edge_vector heavy_edges(node_count);
+    for (size_t node = 0; node < my_nodes_count; ++node) {
+        std::partition_copy(thread_edges_by_node[node].begin(),
+                            thread_edges_by_node[node].end(),
+                            std::back_inserter(light_edges[node]),
+                            std::back_inserter(heavy_edges[node]),
+                            [&](const edge& e) { return e.cost <= m_delta; });
+    }
 
     threads.single_collective([&] { m_requests.resize(threads.thread_count()); }, true);
     m_requests[thread_rank].reset(new relaxed_vector<request>(threads, thread_rank, edge_count));
@@ -98,17 +111,15 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
                 bucket_indices[node] = -1;
             }
             for (size_t node : current_bucket) {
-                for (const edge& edge : thread_edges_by_node[node]) {
-                    if (edge.cost <= m_delta) { // TODO sort preprocessing (?)
-                        const int dest_thread = threads.chunk_thread_at(node_count, edge.destination);
-                        if (dest_thread == thread_rank) {
-                            // local relaxation
-                            relax(edge.destination - my_nodes_start, distances[node] + edge.cost, edge.source);
-                        } else {
-                            // remote relaxation
-                            m_requests[dest_thread]->push_back(
-                                request(edge.destination, distances[node] + edge.cost, edge.source));
-                        }
+                for (const edge& edge : light_edges[node]) {
+                    const int dest_thread = threads.chunk_thread_at(node_count, edge.destination);
+                    if (dest_thread == thread_rank) {
+                        // local relaxation
+                        relax(edge.destination - my_nodes_start, distances[node] + edge.cost, edge.source);
+                    } else {
+                        // remote relaxation
+                        m_requests[dest_thread]->push_back(
+                            request(edge.destination, distances[node] + edge.cost, edge.source));
                     }
                 }
             }
@@ -129,17 +140,15 @@ void sssp::delta_stepping::run_collective(thread_group& threads,
         // Relax the remaining heavy edges
         perf.next_timeblock("heavy_relax");
         for (size_t node : delayed_nodes) {
-            for (const edge& edge : thread_edges_by_node[node]) {
-                if (edge.cost > m_delta) {
-                    const int dest_thread = threads.chunk_thread_at(node_count, edge.destination);
-                    if (dest_thread == thread_rank) {
-                        // local relaxation
-                        relax(edge.destination - my_nodes_start, distances[node] + edge.cost, edge.source);
-                    } else {
-                        // remote relaxation
-                        m_requests[dest_thread]->push_back(
-                            request(edge.destination, distances[node] + edge.cost, edge.source));
-                    }
+            for (const edge& edge : heavy_edges[node]) {
+                const int dest_thread = threads.chunk_thread_at(node_count, edge.destination);
+                if (dest_thread == thread_rank) {
+                    // local relaxation
+                    relax(edge.destination - my_nodes_start, distances[node] + edge.cost, edge.source);
+                } else {
+                    // remote relaxation
+                    m_requests[dest_thread]->push_back(
+                        request(edge.destination, distances[node] + edge.cost, edge.source));
                 }
             }
         }
