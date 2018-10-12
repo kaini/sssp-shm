@@ -3,6 +3,8 @@
 #include "collective_functions.hpp"
 #include "relaxed_vector.hpp"
 #include <cmath>
+#include <string>
+#include <vector>
 
 namespace sssp {
 
@@ -13,6 +15,8 @@ struct edge {
     size_t destination = -1;
     double cost = 0.0;
 };
+
+std::vector<std::vector<edge>> read_graph_file(const std::string& path);
 
 void distribute_nodes_generate_uniform_collective(thread_group& threads,
                                                   int thread_rank,

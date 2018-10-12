@@ -1,7 +1,70 @@
 #include "graph.hpp"
 #include "thread_local_allocator.hpp"
+#include <boost/algorithm/string.hpp>
+#include <boost/lexical_cast.hpp>
+#include <cctype>
+#include <fstream>
+#include <iostream>
 #include <random>
+#include <set>
+#include <unordered_map>
 #include <vector>
+
+using namespace boost::algorithm;
+
+std::vector<std::vector<sssp::edge>> sssp::read_graph_file(const std::string& path) {
+    std::unordered_map<std::string, size_t> nodes;
+    std::vector<std::vector<sssp::edge>> result;
+
+    std::ifstream in(path);
+    std::string line;
+    std::vector<std::string> columns;
+    size_t node_index = 0;
+    while (std::getline(in, line)) {
+        trim(line);
+        if (line.empty() || starts_with(line, "#") || starts_with(line, "//") || starts_with(line, "--")) {
+            continue;
+        }
+
+        columns.clear();
+        split(columns, line, [](char c) { return std::isspace(static_cast<int>(c)); }, token_compress_on);
+        if (columns.size() < 2) {
+            std::cerr << "Parse error in " << path << "!\n";
+            return {};
+        }
+
+        double cost = 1.0;
+        if (columns.size() >= 3) {
+            try {
+                cost = boost::lexical_cast<double>(columns[2]);
+            } catch (const boost::bad_lexical_cast& ex) {
+                std::cerr << "Parse error in " << path << ": " << ex.what() << "\n";
+                return {};
+            }
+        }
+
+        if (nodes.find(columns[0]) == nodes.end()) {
+            nodes[columns[0]] = node_index++;
+        }
+        if (nodes.find(columns[1]) == nodes.end()) {
+            nodes[columns[1]] = node_index++;
+        }
+        size_t source = nodes[columns[0]];
+        size_t destination = nodes[columns[1]];
+
+        result.resize(std::max(std::max(source, destination) + 1, result.size()));
+        result[source].push_back(edge(source, destination, cost));
+    }
+    if (!in.eof()) {
+        std::cerr << "Read error: " << path << "\n";
+        return {};
+    }
+
+    std::cerr << "Read " << path << ": " << result.size() << " nodes "
+              << std::accumulate(result.begin(), result.end(), size_t(0), [](size_t a, const auto& v) { return a + v.size(); })
+              << " edges\n";
+    return result;
+}
 
 void sssp::distribute_nodes_generate_uniform_collective(
     thread_group& threads,
@@ -108,7 +171,7 @@ void sssp::distribute_nodes_generate_kronecker::run_collective(
             std::mt19937 rng(seed);
 
             m_start_size = start_size;
-            m_matrix = { 1.425, 0.475, 0.475, 0.125 };
+            m_matrix = {1.425, 0.475, 0.475, 0.125};
 
             m_matrix_prefix_sum.resize(start_size * start_size);
             m_matrix_prefix_sum[0] = m_matrix[0];

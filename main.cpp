@@ -80,6 +80,7 @@ int main(int argc, char* argv[]) {
     int thread_count = -1;
     int group_layer = 0;
     int k = 3;
+    std::string graph_file = "";
     std::string graph_type = "uniform";
     bool print_header = true;
     double delta = 1.0 / (edge_chance * node_count);
@@ -87,6 +88,8 @@ int main(int argc, char* argv[]) {
     // clang-format off
     po::options_description opts("SSSP Benchmarking Tool");
     opts.add_options()
+        ("graph-file", po::value(&graph_file)->default_value(graph_file),
+            "Load the graph from an input file: Ignores all other options.")
         ("graph", po::value(&graph_type)->default_value(graph_type)->required(),
             "Graph type: uniform or kronecker (Kronecker's initiator matrix is hardcoded to 1.425, 0.475, 0.475, 0.125 (= Graph 500 matrix * 2.5)")
         ("node-count", po::value(&node_count)->default_value(node_count)->required(),
@@ -203,6 +206,7 @@ int main(int argc, char* argv[]) {
     std::vector<double> time_by_thread(thread_count, INFINITY);
     std::atomic<size_t> global_edge_count;
     distribute_nodes_generate_kronecker distribute_nodes_generate_kronecker;
+    std::vector<std::vector<edge>> shared_input_graph;
 
 #if defined(BY_NODES)
     own_queues_sssp algorithm;
@@ -239,7 +243,7 @@ int main(int argc, char* argv[]) {
     }
 
     for (int rank = 0; rank < thread_count; ++rank) {
-        thread_handles.emplace_back(std::thread([&, rank] {
+        thread_handles.emplace_back(std::thread([&, rank, node_count]() mutable {
             // Pin the threads
             hwloc_obj_t pu = threads.get_pu(rank);
             if (hwloc_set_cpubind(topo, pu->cpuset, HWLOC_CPUBIND_THREAD) == -1) {
@@ -247,7 +251,63 @@ int main(int argc, char* argv[]) {
             }
 
             // Generate the graph
-            if (graph_type == "uniform") {
+            if (graph_file != "") {
+#if defined(BY_NODES) || defined(DELTASTEPPING) || defined(SEQ)
+                threads.single_collective([&] { shared_input_graph = read_graph_file(graph_file); }, true);
+                node_count = shared_input_graph.size();
+                if (node_count <= rank) {
+                    threads.critical_section(
+                        [] {
+                            std::cerr << "The input graph is too small!\n";
+                            std::exit(1);
+                        },
+                        false);
+                }
+
+                for (size_t node = threads.chunk_start(rank, node_count),
+                            end = node + threads.chunk_size(rank, node_count);
+                     node < end;
+                     ++node) {
+                    std::copy(shared_input_graph[node].begin(),
+                              shared_input_graph[node].end(),
+                              std::back_inserter(edges_by_thread[rank]));
+                }
+
+                size_t last_source = -1;
+                edge* start = &edges_by_thread[rank][0];
+                size_t count = 0;
+                edges_by_thread_by_node[rank].resize(threads.chunk_size(rank, node_count));
+                for (const edge& edge : edges_by_thread[rank]) {
+                    if (edge.source != last_source) {
+                        if (last_source != -1) {
+                            edges_by_thread_by_node[rank][last_source - threads.chunk_start(rank, node_count)] =
+                                array_slice<sssp::edge>(start, count);
+                        }
+                        last_source = edge.source;
+                        start += count;
+                        count = 0;
+                    }
+                    count += 1;
+                }
+                edges_by_thread_by_node[rank][last_source - threads.chunk_start(rank, node_count)] =
+                    array_slice<sssp::edge>(start, count);
+
+                threads.barrier_collective(false);
+                threads.single_collective(
+                    [&] {
+                        shared_input_graph.clear();
+                        shared_input_graph.shrink_to_fit();
+                    },
+                    false);
+#elif defined(BY_EDGES)
+                threads.critical_section(
+                    [] {
+                        std::cerr << "Input file in BY_EDGES mode not supported\n";
+                        std::exit(1);
+                    },
+                    false);
+#endif
+            } else if (graph_type == "uniform") {
 #if defined(BY_NODES) || defined(DELTASTEPPING) || defined(SEQ)
                 distribute_nodes_generate_uniform_collective(
                     threads, rank, node_count, edge_chance, seed, edges_by_thread[rank], edges_by_thread_by_node[rank]);
@@ -395,8 +455,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (print_header) {
-        std::cout
-            << "executable,graph,node_count,edge_chance,k,delta,seed,thread_count,group_layer,thread,time";
+        std::cout << "executable,graph,node_count,edge_chance,k,delta,seed,thread_count,group_layer,thread,time";
 #if !defined(SEQ)
         for (const auto& perf : algorithm.perf()[0].values()) {
             std::cout << "," << perf.first;
@@ -415,10 +474,10 @@ int main(int argc, char* argv[]) {
             executable = executable.substr(last_backslash + 1);
         }
         std::cout << executable << ",";
-        std::cout << graph_type << ",";
-        std::cout << (graph_type == "uniform" ? std::to_string(node_count) : "NA") << ",";
-        std::cout << (graph_type == "uniform" ? std::to_string(edge_chance) : "NA") << ",";
-        std::cout << (graph_type == "kronecker" ? std::to_string(k) : "NA") << ",";
+        std::cout << (graph_file == "" ? graph_type : "NA") << ",";
+        std::cout << (graph_type == "uniform" && graph_file == "" ? std::to_string(node_count) : "NA") << ",";
+        std::cout << (graph_type == "uniform" && graph_file == "" ? std::to_string(edge_chance) : "NA") << ",";
+        std::cout << (graph_type == "kronecker" && graph_file == "" ? std::to_string(k) : "NA") << ",";
 #if defined(DELTASTEPPING)
         std::cout << delta << ",";
 #else
