@@ -474,7 +474,7 @@ int main(int argc, char* argv[]) {
             executable = executable.substr(last_backslash + 1);
         }
         std::cout << executable << ",";
-        std::cout << (graph_file == "" ? graph_type : "NA") << ",";
+        std::cout << (graph_file == "" ? graph_type : graph_file) << ",";
         std::cout << (graph_type == "uniform" && graph_file == "" ? std::to_string(node_count) : "NA") << ",";
         std::cout << (graph_type == "uniform" && graph_file == "" ? std::to_string(edge_chance) : "NA") << ",";
         std::cout << (graph_type == "kronecker" && graph_file == "" ? std::to_string(k) : "NA") << ",";
