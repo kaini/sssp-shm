@@ -277,7 +277,7 @@ int main(int argc, char* argv[]) {
                 }
 
                 size_t last_source = -1;
-                edge* start = &edges_by_thread[rank][0];
+                edge* start = edges_by_thread[rank].data();
                 size_t count = 0;
                 edges_by_thread_by_node[rank].resize(threads.chunk_size(rank, node_count));
                 for (const edge& edge : edges_by_thread[rank]) {
@@ -292,8 +292,10 @@ int main(int argc, char* argv[]) {
                     }
                     count += 1;
                 }
-                edges_by_thread_by_node[rank][last_source - threads.chunk_start(rank, node_count)] =
-                    array_slice<sssp::edge>(start, count);
+                if (last_source != -1) {
+                    edges_by_thread_by_node[rank][last_source - threads.chunk_start(rank, node_count)] =
+                        array_slice<sssp::edge>(start, count);
+                }
 
                 threads.barrier_collective(false);
                 threads.single_collective(
