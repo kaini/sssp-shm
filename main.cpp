@@ -243,7 +243,7 @@ int main(int argc, char* argv[]) {
     }
 
     for (int rank = 0; rank < thread_count; ++rank) {
-        thread_handles.emplace_back(std::thread([&, rank, node_count]() mutable {
+        thread_handles.emplace_back(std::thread([&, rank, node_count, node_count_ptr=&node_count]() mutable {
             // Pin the threads
             hwloc_obj_t pu = threads.get_pu(rank);
             if (hwloc_set_cpubind(topo, pu->cpuset, HWLOC_CPUBIND_THREAD) == -1) {
@@ -253,7 +253,10 @@ int main(int argc, char* argv[]) {
             // Generate the graph
             if (graph_file != "") {
 #if defined(BY_NODES) || defined(DELTASTEPPING) || defined(SEQ)
-                threads.single_collective([&] { shared_input_graph = read_graph_file(graph_file); }, true);
+                threads.single_collective([&] {
+                    shared_input_graph = read_graph_file(graph_file);
+                    *node_count_ptr = shared_input_graph.size();
+                }, true);
                 node_count = shared_input_graph.size();
                 if (node_count <= rank) {
                     threads.critical_section(
